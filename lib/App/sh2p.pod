@@ -1,0 +1,152 @@
+
+=head1 NAME
+
+App::sh2p - Perl program to aid for conversion from UNIX shell to Perl
+
+=head1 SYNOPSIS
+
+  sh2p.pl [-i] [-r] [script-name] [...]
+  
+This Perl script, and associated modules in the sh2p directory, 
+will attempt to convert the supplied shell script to Perl.  The
+converted code is written to STDOUT.
+  
+The generated code will:
+    use integer;
+The POSIX shell only supports integer arithmetic, this may be supressed with the -i option
+          
+    use sh2p::Runtime;
+This is (currently) required if the shell 'read' statement is used, 
+however it is always included unless supressed with the -r option
+  
+
+CAVEAT: Incorrect shell commands will result in incorrect Perl!
+
+
+=head1 DESCRIPTION
+
+This program attempts to convert the base syntax of a UNIX shell script to Perl.  
+It does not attempt to redesign the script for Perl but to assist in the conversion 
+process by automating much of the tedium.
+
+=head2 INSPECT messages
+
+These are output whenever sh2p detects code which requires manual intervention,
+which is often.  A message of the format '**** INSPECT: free-text' is written to 
+the output script as a comment, and to STDERR.
+
+=head2 Here documents
+
+These work in the shell by writing a temporary file and
+then reading it.  We use a similar method here, except the
+directory used is taken from the environment variable SH2P_HERE_DIR.
+If that is not set then the current directory is used.
+
+The heredoc data is extracted from the script and written to a file named
+label.here, where 'label' is the label used to identify the heredoc.
+
+Currently external programs reading from a heredoc require manual intervention.
+
+=head2 External programs and built-ins
+
+It is tempting to substitute Perl built-ins for external programs like chmod, rm,
+and so on.  However the return codes are different and require a different testing
+regime.  Therefore these are identified by and INSPECT message.
+
+
+=head1 Know bugs and short comings (TODO):
+
+=head2 Bugs
+
+Free standing arithmentic assignments, like $(( $x = $y + $z )),
+will not have a ; statement separator (yes, I know its a bug).
+
+String concatination is not handled correctly
+
+expr should be handled
+
+return without an argument has a \n before ;
+
+back-ticks on rhs are not handled correctly in all cases
+
+=head2 Shortcomings
+
+Pipelines are problematic, and right now all I do is output some advice
+
+Currently unsupported :
+   Array assignments
+   ${  } notations
+   typedef
+   shell pattern matching constructs (Compound::ksh_test)
+   glob constructs in tests (Compound::sh_test)
+   Multiple levels in 'break' and 'continue'
+   Nested 'here' documents
+   Options to the 'export' command
+   The Bourne-shell syntax for functions is currently not supported (only the ksh)
+
+The following built-ins are currently not converted:
+                 alias    
+                 bg       
+                 bind     
+                 builtin  
+                 command  
+                 eval     
+                 exec         
+                 false    
+                 fc       
+                 fg       
+                 getopts  
+                 hash     
+                 jobs     
+                 kill     
+                 let      
+                 pwd      
+                 readonly 
+                 return   
+                 shift    
+                 time     
+                 times    
+                 trap     
+                 true     
+                 ulimit   
+                 umask    
+                 unalias   
+                 wait     
+                 whence   
+
+The following compound statements are currently unsupported:
+                  'case'     
+                  'esac'    
+                  'select'   
+                  'time'     
+                   '!'       
+
+The following operators are currently unsupported:
+                '|&'
+                 '&'
+
+
+
+=head1 SEE ALSO
+
+
+
+=head1 AUTHOR
+
+Clive Darke, E<lt>clive.darke@talk21.comE<gt>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (C) 2008 by C.B.Darke
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.10.0 or,
+at your option, any later version of Perl 5 you may have available.
+
+
+=cut
+
+
+
+
+

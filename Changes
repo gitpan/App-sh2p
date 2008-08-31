@@ -1,0 +1,6 @@
+Revision history for Perl extension App::sh2p.
+
+0.01  Sun Aug 31 12:09:03 2008
+	- original version; created by h2xs 1.23 with options
+		-A -n App::sh2p
+

@@ -1,0 +1,41 @@
+App-sh2p version 0.01
+=====================
+
+This Perl script, and associated modules in the sh2p directory, 
+attempts to convert the base syntax of a UNIX shell script to Perl.
+
+It does not attempt to redesign the script for Perl but to assist 
+in the conversion process by automating much of the tedium.
+
+NOTE
+This project is under development.  Feel free to use it at you own risk -
+feedback will be welcome and should be sent to CLIVE@cpan.org.
+
+SYNOPSIS
+
+  sh2p.pl [-i] [-r] [script-name] [...]
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+DEPENDENCIES
+
+This module requires these other modules and libraries:
+
+  Getopt::Std
+
+COPYRIGHT AND LICENCE
+
+Copyright (C) 2008 by C.B.Darke
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.10.0 or,
+at your option, any later version of Perl 5 you may have available.
+
+
