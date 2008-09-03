@@ -29,6 +29,7 @@ DEPENDENCIES
 This module requires these other modules and libraries:
 
   Getopt::Std
+  File::Basename
 
 COPYRIGHT AND LICENCE
 

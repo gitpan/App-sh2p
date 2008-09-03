@@ -12,25 +12,31 @@ our $VERSION = '0.02';
 require Exporter;
 our (@ISA, @EXPORT);
 @ISA = ('Exporter');
-@EXPORT = qw (Register_variable print_types_tokens reset_globals
-              iout              out                error_out
-              get_special_var   set_special_var
-              mark_function     unmark_function    ina_function
-              inc_block_level   dec_block_level    get_block_level
-              is_user_function  set_user_function
-              dec_indent        inc_indent 
-              no_semi_colon     reset_semi_colon   query_semi_colon);
+@EXPORT = qw (Register_variable  Delete_variable    get_variable_type
+              print_types_tokens reset_globals
+              iout               out                error_out
+              get_special_var    set_special_var
+              mark_function      unmark_function    ina_function
+              inc_block_level    dec_block_level    get_block_level
+              is_user_function   set_user_function
+              dec_indent         inc_indent 
+              no_semi_colon      reset_semi_colon   query_semi_colon
+              open_out_file      close_out_file);
 
 ############################################################################
 
 my $g_indent_spacing = 4;
 
 my %g_special_vars = (
-      'IFS' => '" \t\n"',
-      '?'   => '($? >> 8)',
-      '#'   => 'scalar(@ARGV)',
-      '@'   => '@ARGV',
-      '*'   => '@ARGV',    # Should do a join with IFS
+      'IFS'   => '" \t\n"',
+      'ERRNO' => '\$!',
+      '?'     => '($? >> 8)',
+      '#'     => 'scalar(@ARGV)',
+      '@'     => '@ARGV',
+      '*'     => '@ARGV',    # Should do a join with IFS
+      '-'     => 'not supported',
+      '$'     => '$$',
+      '!'     => 'not supported'
       );
 
 # This hash keeps a key for each variable declared
@@ -46,6 +52,8 @@ my $g_indent         = 0;
 my $g_errors         = 0;
 my $g_line_number    = 1;
 
+my $g_outh;
+my $g_filename;
 
 #  For use by App::sh2p only
 ############################################################################
@@ -53,6 +61,8 @@ my $g_line_number    = 1;
 sub get_special_var {
    my ($name) = @_;
    my $retn;
+   
+   return undef if ! defined $name;
    
    # Remove dollar prefix
    $name =~ s/^\$//;
@@ -118,26 +128,62 @@ sub ina_function {
 # Return TRUE if NOT already registered
 sub Register_variable {
     
-    my ($name) = @_;
+    my ($name, $type) = @_;
     my $level  = get_block_level();
     
-    #print STDERR "Register variable <$name> level $level\n";
-    #print Dumper(\%variables),"\n";
+    if (! defined $type) {
+        $type = '$'
+    }
+    
+    #print STDERR "Register_variable: <$name> <$type> <$level>\n";
     
     if (exists $variables{$name}) {
-       if ($variables{$name} >= $level) {
+    
+       if ($variables{$name}->[0] <= $level) {
            return 0
        }
        else {
+           # Possible change of type ?
            return 1
        }
     }
     else {
-       # Create the variable with a block level
+       # Create the variable with a block level and type
        
-       $variables{$name} = $level;
+       $variables{$name} = [$level, $type];
        return 1
     } 
+}
+
+############################################################################
+
+sub get_variable_type {
+
+    my ($name) = @_;
+    my $level  = get_block_level();
+        
+    if (exists $variables{$name}) {
+  
+       if ($variables{$name}->[0] <= $level) {
+           return $variables{$name}->[1]
+       }
+    }
+    
+    return '$';      # default
+}
+
+############################################################################
+# Called by unset
+sub Delete_variable {
+    my ($name) = @_;
+    my $level  = get_block_level();
+        
+    if (exists $variables{$name}) {
+       if ($variables{$name} <= $level) {
+           delete $variables{$name}
+       }
+    }
+   
 }
 
 #################################################################################
@@ -194,10 +240,36 @@ sub inc_indent { $g_indent++ if $g_indent < 80 }
 sub dec_indent { $g_indent-- if $g_indent > 0  }
 
 #################################################################################
+
+sub open_out_file {
+    $g_filename = shift;
+    
+    if ($g_filename eq '-') {
+        $g_outh = *STDOUT;
+    }
+    else {
+        open ($g_outh, '>', $g_filename) || die "$g_filename: $!\n";
+        print STDERR "Processing $g_filename:\n";
+    }
+}
+
+sub close_out_file {
+    
+    close ($g_outh);
+    print STDERR "\n";
+    $g_filename = undef;
+}
+
+#################################################################################
 # Indented out
 sub iout {
 
-   print ' ' x ($g_indent * $g_indent_spacing);
+   print $g_outh ' ' x ($g_indent * $g_indent_spacing);
+   
+   #if ($_[0] =~ /^my/) {
+   #    my @caller = caller();
+   #    print "iout my: @caller\n";
+   #}
    
    out (@_);
 }
@@ -216,7 +288,7 @@ sub out {
        $g_line_number++
    }
    
-   print $line;
+   print $g_outh $line;
    
    $g_new_line = 0;
 }
@@ -228,13 +300,13 @@ sub error_out {
     
     if (defined $msg) {
         $msg = "**** INSPECT: $msg\n";
+        printf STDERR " %03d %s", $g_line_number, $msg;
     }
     else {
         $msg = "\n";
     }
     
-    printf STDERR "%03d %s", $g_line_number, $msg;
-    print "# $msg";
+    out "# $msg";
     $g_line_number++;
     
     $g_errors++;

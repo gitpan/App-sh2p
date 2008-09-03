@@ -13,7 +13,6 @@ our $VERSION = '0.02';
 
 my $g_unterminated_backtick = 0;
 
-
 #  For use by App::sh2p only
 ############################################################################
 
@@ -23,13 +22,11 @@ sub Handle_assignment {
    my $ntok = 1;
    my ($in, @rest)  = @_;
    
-   $in =~ /^(\w+)=(.*)$/;
+   #print STDERR "Handle_assignment: <$in>\n";
+   
+   $in =~ /^(\w+)=?(.*)$/;
    my $lhs = $1;
    my $rhs = $2;
-   
-   if ( !defined $rhs) {
-      die "No rhs - not happy. <$in>"
-   }
    
    if (defined get_special_var($lhs)) {
       set_special_var ($lhs, $rhs);
@@ -38,17 +35,45 @@ sub Handle_assignment {
    my $name = "\$$lhs";
    
    if (Register_variable ($name) ) {
-       iout "my $name = ";
+       iout "my $name";
    }
    else {
-       iout "$name = ";
+       iout "$name";
    }
    
-   if ( !defined $rhs || !$rhs ) {
-      out 'undef'
+   if ( ! defined $rhs ) {
+      out ';';
+      if ($ntok == @_) {
+          out "\n";
+      }
+         
+      return $ntok;
+   }
+   else {
+      out ' = ';
+   }
+ 
+   my $isa_int = 0;
+   if (get_variable_type($name) eq 'int') {
+      $isa_int = 1;
+   }
+   
+   if ( $rhs eq '' ) {
+      if ($isa_int) {
+         out 0
+      }
+      else {
+         out '""'
+      }
+   }
+   elsif ($rhs =~ /^\d+$/) {
+      out $rhs
    }
    else {
       # Process the rhs
+      if ($isa_int) {
+         out "int(";
+      }
       
       for my $tok (@rest) {
           last if substr($tok,0,1) eq '#';
@@ -56,6 +81,7 @@ sub Handle_assignment {
           $ntok++;
       }
       
+      no_semi_colon();
       my @tokens = App::sh2p::Parser::tokenise ($rhs);
       my @types  = App::sh2p::Parser::identify (1, @tokens); 
       
@@ -64,6 +90,12 @@ sub Handle_assignment {
       #print_types_tokens (@types, @tokens);
       
       App::sh2p::Parser::convert (@tokens, @types);
+      reset_semi_colon();
+      
+      if ($isa_int) {
+         out ")";
+      }
+
    }
    
    out ';';
@@ -89,7 +121,11 @@ sub Handle_array_assignment {
    if ( !defined $rhs) {
       die "No rhs - not happy. <$in>"
    }
-   
+      
+   if (Register_variable ($arr, '@') ) {
+          iout "my \@$arr;\n";
+   }
+
    # The shell allows a variable index without a '$'
    if ($idx =~ /^[[:alpha:]_]\w+/)  {  # No '$' (count + 1)
       $idx = "\$$idx";   
@@ -97,7 +133,7 @@ sub Handle_array_assignment {
    
    iout "\$$arr\[$idx\] = ";
       
-   if ( !defined $rhs || !$rhs ) {
+   if ( !defined $rhs ) {
       out 'undef'
    }
    else {
@@ -127,19 +163,40 @@ sub Handle_break {
 
 ############################################################################
 
+sub Handle_open_redirection {
+    my ($type, $filename) = @_;
+    
+    # print STDERR "Handle_open_redirection: <$type> <$filename>\n";
+    out ("\n");   
+    iout ("open(my \$sh2p_handle,'$type',\"$filename\") or\n");
+    iout ("     die \"Unable to open $filename: \$!\";\n");
+    
+}
+
+############################################################################
+
+sub Handle_close_redirection {
+   
+    iout ("close(\$sh2p_handle);\n");
+    iout ("undef \$sh2p_handle;\n\n");
+    
+}
+
+############################################################################
+
 sub Handle_variable {
    my $token = shift;
    my $new_token;
+   
+   #print STDERR "Handle_variable: <$token>\n";
    
    # Check for specials
    if ($new_token = get_special_var($token)) {
       $token = $new_token;
    }
-   elsif ( substr($token, 0, 2) eq '${' ) {
-      # TODO Variable expansion
-      
-      # Strip out the braces
-      $token =~ s/\$\{(.*)\}/\$$1/;
+   elsif ( $token =~ s/^\$#(.+)/\$$1/ ) {
+        out "length($token)";
+        return 1;
    }
    elsif ( substr($token, 0, 3) eq '$((' ) {
       # Calculation
@@ -155,6 +212,53 @@ sub Handle_variable {
    out $token;
    
    return 1;
+}
+
+############################################################################
+
+sub Handle_expansion {
+    my ($token) = @_;
+    
+    # Strip out the braces
+    $token =~ s/\$\{(.*)\}/\$$1/;
+    
+    #print STDERR "Handle expansion : <$token>\n";
+    
+    if ( $token =~ /(.+):([:?\-=+]){1,2}([^:?\-=+]+)/ ) {
+        my $var    = $1;
+        my $qual   = $2;
+        my $extras = $3;
+        
+        if ($qual eq '?') {
+            if (! $extras) {
+                $extras = "'$var undef or not set'";
+            }
+            
+            # $extras should already be quoted
+            out ("print STDERR $extras,\"\\n\" if (! defined $var or ! $var);");
+        }
+        elsif ($qual eq '=') {
+            out ("$var = $extras if (! defined $var or ! $var);");
+        }
+        elsif ($qual eq '-') {
+	    out ("(defined $var or $var) || $extras;");
+        }
+        elsif ($qual eq '+') {
+	    out ("(! defined $var or ! $var) || $extras;");
+	}
+        else {
+            error_out ("Pattern $qual not currently supported");
+            out ($token);
+        }
+        return 1;
+    }    
+    elsif ( $token =~ s/^\$#(.+)/\$$1/ ) {
+        out "length($token)";
+        return 1;
+    }
+    else {
+        return Handle_variable($token);
+    }
 }
 
 ############################################################################

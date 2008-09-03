@@ -11,6 +11,8 @@ use constant (BREAK => '@');
 our $VERSION = '0.02';
 
 my $g_not = 0;
+my $g_context = '';
+my @g_case_statements;
 
 #####################################################
               #  shell   perl
@@ -49,7 +51,7 @@ my %sh_convert = ('-o' => 'or',
 # ((
 sub arith {
 
-   my ($statement) = @_;  
+   my ($statement, @rest) = @_;  
    
    # First 2 chars passed should be (( or $((
    $statement =~ s/^\$?\(\(//;
@@ -59,10 +61,9 @@ sub arith {
    my $out = '( ';
    my @tokens = App::sh2p::Parser::tokenise ($statement);
 
-   my $pattern = '==|>=|<=|\/=|%=|\+=|-=|\*=|=|>|<|!=|\+|-|\*|\/|%';
+   my $pattern = '==|>=|<=|\/=|%=|\+=|-=|\*=|=|>|<|!=|\+\+|\+|--|-|\*|\/|%';
 
-   for my $token (@tokens) {
-      
+   for my $token (@tokens) {  
       # Further tokenise
       
       $token =~ s/($pattern)/$1 /;
@@ -79,8 +80,12 @@ sub arith {
       
    }
   
-   out "$out )";
-   
+   if (query_semi_colon()) {
+       out "$out );\n";
+   }
+   else {
+       out "$out )";
+   }
    return 1;
 }
 
@@ -187,10 +192,8 @@ sub sh_test {
           $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
       }
       else {
-         # TODO look for glob constructs  
-         if ($token =~ /($specials)\(/) {
-	     error_out ("Unable to convert glob constructs <$token>");
-	     $types[$index] = [('OPERATOR', \&App::sh2p::Operators::no_change)];
+         if ($token =~ /($specials)/) {
+	     $types[$index] = [('OPERATOR', \&App::sh2p::Compound::convert_pattern)];
 	 }
 	 elsif ($token eq '!') {
 	     $g_not = 1;
@@ -215,10 +218,21 @@ sub sh_test {
 
 #####################################################
 
+sub convert_pattern {
+    
+    my ($in) = @_;
+    out ('/'.glob2pat ($in).'/');
+    return 1;
+}
+
+#####################################################
+
 sub Handle_if {
 
    my ($cmd, @statements) = @_;
    my $ntok = 1;
+   
+   $g_context = 'if';
    
    # First token is 'if'
    iout "$cmd ";
@@ -239,6 +253,8 @@ sub Handle_fi {
    dec_block_level();
    out "\n";
    iout "}\n";
+   
+   $g_context = '';
    
    return 1;
 }
@@ -282,6 +298,8 @@ sub Handle_else {
    inc_indent();
    inc_block_level();
 
+   $g_context = 'else';
+
    # 2nd command?
    if (@statements) {
        $ntok += process_second_statement(0, @statements);
@@ -302,6 +320,8 @@ sub Handle_elif {
    iout "}\n";
    iout 'elsif ';
 
+   $g_context = 'if';
+
    # 2nd command?
    if (@statements) {
        $ntok += process_second_statement(1, @statements);
@@ -311,11 +331,132 @@ sub Handle_elif {
 }
 
 #####################################################
+# Thank-you, the Perl Cookbook 
+# http://www.unix.com.ua/orelly/perl/cookbook/ch06_10.htm
+# Unfortunatly there is more to shell pattern matching than
+# the Cookbook says, lots of problems.   
+# see http://www.perlmonks.com/?node_id=708493
+#    $globstr =~ s{(?:^|(?<=[^\\]))(.)} { $patmap{$1} || "\Q$1" }ge;
+
+sub glob2pat {
+    my $globstr = shift;
+    my $inside_br = 0;
+    my @chars = (split '', $globstr);
+    #print STDERR "glob2pat: @chars\n";
+    
+    # C style used because I need to skip-ahead and look-behind
+    for (my $i; $i < @chars; $i++) {
+        if ($chars[$i] eq '\\') {
+            $i++;          # ignore next char
+        }
+        elsif ($chars[$i] eq '[') {
+            $inside_br++;  # Allow for nested []
+        }
+        elsif ($chars[$i] eq ']' && $inside_br) {
+            $inside_br--;
+        }
+        elsif ($chars[$i] eq '!' && $inside_br && $chars[$i-1] eq '[') { 
+            # ! only means 'not' at the front of the [] list
+            $chars[$i] = '^'
+        }
+        elsif (! $inside_br) {
+            if ($chars[$i] eq '*') {
+                $chars[$i] = '.*'
+            }
+            elsif ($chars[$i] eq '?') {
+                $chars[$i] = '.'
+            }
+        }
+    }
+    
+    local $" = '';
+    return "^@chars\$";
+}
+
+#####################################################
+
+sub push_case {
+
+    push @g_case_statements, @_;
+
+}
+
+#####################################################
+
+sub Handle_case {
+
+    my ($cmd, $var, $in, @rest) = @_;
+    my $ntok = 2;
+    
+    $g_context = 'case';
+    
+    if ($in ne 'in') {
+        error_out ("Expected 'in', got $in");
+    }
+    
+    iout "\$_ = \"$var\";\n";
+    iout "SWITCH: {\n";
+
+    inc_indent();
+    inc_block_level();
+    
+    for (my $i; $i < @rest; $i++) {
+
+        my $condition = $rest[$i];
+        $condition =~ s/^\(?(.*)\)$/$1/;
+        $condition = glob2pat ($condition);
+        iout ("/$condition/ && do {\n");
+        inc_indent();
+        inc_block_level();
+        
+        my @tokens;
+        
+        for ( $i++; $i < @rest; $i++) {
+            push @tokens,$rest[$i]; 
+            if ($rest[$i] eq ';' && $rest[$i+1] eq ';') {
+                $i++;
+                last;
+            }
+        }
+        
+        my @types  = App::sh2p::Parser::identify (0, @tokens);	
+	App::sh2p::Parser::convert (@tokens, @types);
+        
+        iout ("last SWITCH;\n");
+        dec_indent();
+        dec_block_level();
+        iout ("}\n");
+    }
+    
+    return $ntok;
+}
+
+#####################################################
+
+sub Handle_esac {
+
+    my ($cmd) = @_;
+
+    Handle_case (@g_case_statements);
+
+    $g_context = '';
+    dec_indent();
+    dec_block_level();
+    @g_case_statements = ();
+    
+    iout "\n}\n";
+    
+    return 1;
+}
+
+#####################################################
 
 sub Handle_for {
 
    # Format: for var in list
    my ($cmd, $var, $in, @list) = @_;
+   
+   $g_context = 'for';
    
    my $ntok = @_;
    if (substr(0,1,$list[-1]) eq '#') {
@@ -366,6 +507,8 @@ sub Handle_while {
    # First token is 'while'
    iout "$cmd ";
    
+   $g_context = 'while';
+   
    # 2nd command?
    if (@statements) {
        $ntok += process_second_statement(1, @statements);
@@ -383,6 +526,8 @@ sub Handle_until {
    
    # First token is 'until'
    iout "$cmd ";
+   
+   $g_context = 'while';
    
    # 2nd command?
    if (@statements) {
@@ -407,6 +552,8 @@ sub Handle_done {
    dec_block_level();
    out "\n";
    iout "}\n";
+   
+   $g_context = '';
    
    return 1;
 }
@@ -434,7 +581,7 @@ sub Handle_function {
    out "sub $name ";
    
    set_user_function($name);
-   
+   $g_context = 'function';
    
    return 2;
 }
@@ -462,7 +609,15 @@ sub close_brace {
    unmark_function();
    dec_block_level();
 
+   $g_context = '';
+
    return 1;
+}
+
+#####################################################
+
+sub get_context {
+    return $g_context;
 }
 
 #####################################################

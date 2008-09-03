@@ -8,7 +8,8 @@ sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => '@');
 
 our $VERSION = '0.01';
-
+my $g_specials = '\[|\*|\?';
+   
 ######################################################
 
 sub no_change {
@@ -19,7 +20,8 @@ sub no_change {
 
 sub boolean {
 
-   my ($op) = shift;
+   my ($op) = @_;
+   my $ntok = 1;
    
    if (substr($op,0,1) eq '-' && length($op) eq 2) {
        out "$op ";
@@ -28,7 +30,7 @@ sub boolean {
        out " $op ";
    }
    
-   return 1;
+   return $ntok;
 }
 
 # Module end

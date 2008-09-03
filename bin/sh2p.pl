@@ -1,10 +1,11 @@
 #!/usr/bin/perl
 # Clive Darke 2006
-# Additional modifications August 2008
+# Additional modifications 2008
 
 use warnings;
 use strict;
 use Getopt::Std;
+use File::Basename;
 
 use App::sh2p::Parser;
 use App::sh2p::Handlers;
@@ -18,18 +19,20 @@ use constant (BREAK => '@');
 sub process_script (\@);
 sub convert (\@\@);           
 
-my %g_block_commands = (while  => 'done',
-                        until  => 'done',
-                        for    => 'done',
-                        select => 'done',
-                        if     => 'fi',
-                        case   => 'esac',
+my %g_block_commands = ('while'  => 'done',
+                        'until'  => 'done',
+                        'for'    => 'done',
+                        'select' => 'done',
+                        'if'     => 'fi',
+                        'case'   => 'esac',
                         );
 
+# Runtime options
 my $g_integer = 1;
 my $g_runtime = 1;
+my $g_clobber = 0;
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 our $DEBUG   = 0;
 
 ###########################################################
@@ -37,14 +40,54 @@ our $DEBUG   = 0;
 sub outer
 {
    my $num_of_files = 0;
+   my @files;
+   
+   if (-d $_[-1]) {
+       my $dir = pop;
+       
+       for my $file (@_) {
+       
+           my $outfile = basename $file;
+	   
+	   # There might not be an extension
+	   $outfile =~ s/\..*$//;
+           $outfile = "$dir/$outfile.pl";    
+           
+           if (-f $outfile && !$g_clobber) {
+               print STDERR "$outfile already exists. Overwrite(Y/N)?: "; 
+               my $reply = <STDIN>;
+               if ( uc(substr($reply,0,1)) eq 'N' ) {
+                   print STDERR "$file ignored\n";
+                   next;
+               }
+           }
+           push @files,[ ($file, $outfile) ];   
+       }
+   }
+   elsif (@_ == 2) {
+       @files = [ @_[0,1] ];    
+   }
+   else {
+       usage();
+   }
 
-   for my $script_file (@_)
+   for my $ref (@files)
    {
-      open (my $script_h, '<', $script_file) || die "$script_file: $!\n";
+      my $script_h;
+       
+      if ($ref->[0] eq '-') {
+          $script_h = *STDIN;
+      }
+      else {
+          open ($script_h, '<', $ref->[0]) || die "$ref->[0]: $!\n";
+      }
+      
+      open_out_file ($ref->[1]);
+      
       $num_of_files++;
 
       if ( $DEBUG ) {
-         print STDERR "Processing $script_file\n";
+         print STDERR "Processing $ref->[0] -> $ref->[1]\n";
       }
       
       my @the_script = <$script_h>;
@@ -52,6 +95,8 @@ sub outer
       
       reset_globals();
       process_script (@the_script);
+      
+      close_out_file();
    }
    
    return $num_of_files;
@@ -99,10 +144,10 @@ sub process_script (\@)
       $index++;
 
       # shortcut for blank lines
-      if ($line =~ /^\s+$/) { 
+      if ($line =~ /^\s*$/) { 
           out $line;
           next 
-      };
+      }
 
       # Remove leading whitespace
       # Remove leading & trailing whitespace
@@ -197,7 +242,7 @@ sub process_script (\@)
                $delimiter = ';';
             } 
             else {
-               # Inside a while, until, for, or if
+               # Inside a while, until, for, if, or case
                push @statement_tokens, $tok;
             }
          }
@@ -205,12 +250,15 @@ sub process_script (\@)
          if (@statement_tokens && 
                ($delimiter eq ';'    || 
                 $delimiter eq 'fi'   || 
-                $delimiter eq 'done' ||
-                $delimiter eq 'esac' )
+                $delimiter eq 'done' )
              ) {
             my @types  = App::sh2p::Parser::identify (0, @statement_tokens);
             App::sh2p::Parser::convert (@statement_tokens, @types);
             @statement_tokens = ();
+         }
+         elsif ($delimiter eq 'esac') {
+               App::sh2p::Compound::push_case (@statement_tokens);
+               @statement_tokens = ();
          }
          else {
             push @statement_tokens, BREAK
@@ -226,19 +274,23 @@ sub process_script (\@)
 }  # process_script
    
 ###########################################################
+
+sub usage {
+   print STDERR "Usage: sh2p.pl [-i] [-r] [-f] input-file output-file | input-files... out-directory\n";
+   exit 1;
+}
+
+###########################################################
 # main
 my %args;
 
-getopts ('ir', \%args);
+getopts ('irf', \%args);
 $g_integer = 0 if exists $args{'i'};
 $g_runtime = 0 if exists $args{'r'};
+$g_clobber = 1 if exists $args{'f'};
 
-unless ( @ARGV ) {
-   if (-t STDIN) {
-      print 'Enter the name of a shell script: ';
-   }
-   chomp($ARGV[0] = <STDIN>);
-   exit 0 if (!@ARGV || !$ARGV[0]);
+if ( @ARGV < 2 ) {
+   usage();
 }
    
 outer(@ARGV);

@@ -10,6 +10,6 @@ lib/App/sh2p/Here.pm
 lib/App/sh2p/Operators.pm
 lib/App/sh2p/Parser.pm
 lib/App/sh2p/Runtime.pm
-lib/App/sh2p/sh2p.pod
+lib/App/sh2p.pod
 lib/App/sh2p/Utils.pm
 bin/sh2p.pl

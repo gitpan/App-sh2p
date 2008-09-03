@@ -7,18 +7,18 @@ use App::sh2p::Utils;
 sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => '@');
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 our $DEBUG   = 0;
 
 ###########################################################
 
 my %icompound = 
-                ( 'case'     => 1,
+                ( 'case'     => \&App::sh2p::Compound::Handle_case,
                   'do'       => \&App::sh2p::Compound::Handle_do,
                   'done'     => \&App::sh2p::Compound::Handle_done,
                   'elif'     => \&App::sh2p::Compound::Handle_elif,
                   'else'     => \&App::sh2p::Compound::Handle_else,
-                  'esac'     => 3,
+                  'esac'     => \&App::sh2p::Compound::Handle_esac,
                   'fi'       => \&App::sh2p::Compound::Handle_fi,
                   'for'      => \&App::sh2p::Compound::Handle_for,
                   'function' => \&App::sh2p::Compound::Handle_function,
@@ -62,7 +62,7 @@ my %idelimiter =
                  '`'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '$('  => \&App::sh2p::Handlers::Handle_2char_qx,
                  #'<<'  => \&App::sh2p::Handlers::Handle_here_doc,
-                 '${'  => \&App::sh2p::Handlers::Handle_variable,
+                 '${'  => \&App::sh2p::Handlers::Handle_expansion,
                  '('   => \&App::sh2p::Handlers::Handle_delimiter,
                  ')'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '['   => \&App::sh2p::Compound::sh_test,
@@ -75,90 +75,91 @@ my %idelimiter =
                 ); 
                 
 my %ibuiltins =
-               ( ':'       => 1,
+               ( ':'       => \&App::sh2p::Builtins::do_colon,
                  '.'       => \&App::sh2p::Builtins::do_source,
-                 alias     => 2,
-                 bg        => 3,
-                 bind      => 4,
-                 break     => \&App::sh2p::Builtins::do_break,
-                 builtin   => 6,
-                 cd        => \&App::sh2p::Builtins::do_cd,
-                 command   => 8,
+                 'alias'   => 2,
+                 'bg'      => 3,
+                 'bind'    => 4,
+                 'break'   => \&App::sh2p::Builtins::do_break,
+                 'builtin' => 6,
+                 'cd'      => \&App::sh2p::Builtins::do_cd,
+                 'command' => 8,
                  'continue'=> \&App::sh2p::Builtins::do_continue,
                  'echo'    => \&App::sh2p::Builtins::do_print,
                  'eval'    => 2,
                  'exec'    => 3,
                  'exit'    => \&App::sh2p::Builtins::do_exit,
-                 export    => \&App::sh2p::Builtins::do_export,
-                 false     => 6,
-                 fc        => 7,
-                 fg        => 8,
-                 getopts   => 9,
-                 hash      => 10,
-                 jobs      => 11,
-                 kill      => \&App::sh2p::Builtins::one4one,
-                 let       => 3,
+                 'export'  => \&App::sh2p::Builtins::do_export,
+                 'false'   => 6,
+                 'fc'      => 7,
+                 'fg'      => 8,
+                 'getopts' => 9,
+                 'integer' => \&App::sh2p::Builtins::do_integer,
+                 'hash'    => 10,
+                 'jobs'    => 11,
+                 'kill'    => \&App::sh2p::Builtins::do_kill,
+                 'let'     => 3,
                  'print'   => \&App::sh2p::Builtins::do_print,
-                 pwd       => 5,
-                 read      => \&App::sh2p::Builtins::do_read,
-                 readonly  => 7,
+                 'pwd'     => 5,
+                 'read'    => \&App::sh2p::Builtins::do_read,
+                 'readonly'=> 7,
                  'return'  => \&App::sh2p::Builtins::do_return,
-                 set       => \&App::sh2p::Builtins::do_set,
+                 'set'     => \&App::sh2p::Builtins::do_set,
                  'shift'   => 10,
-                 test      => \&App::sh2p::Compound::sh_test,
+                 'test'    => \&App::sh2p::Compound::sh_test,
                  '['       => \&App::sh2p::Compound::sh_test,
-                 time      => 12,
-                 times     => 13,
-                 trap      => 14,
-                 true      => 15,
-                 typeset   => \&App::sh2p::Builtins::do_typeset,
-                 ulimit    => 17,
-                 umask     => 18,
-                 unalias   => 19,
-                 unset     => \&App::sh2p::Builtins::do_unset,
-                 wait      => 21,
-                 whence    => 22,
+                 'time'    => 12,
+                 'times'   => 13,
+                 'trap'    => 14,
+                 'true'    => 15,
+                 'typeset' => \&App::sh2p::Builtins::do_typeset,
+                 'ulimit'  => 17,
+                 'umask'   => 18,
+                 'unalias' => 19,
+                 'unset'   => \&App::sh2p::Builtins::do_unset,
+                 'wait'    => 21,
+                 'whence'  => 22,
                  # Bash specifics
-                 declare   => \&App::sh2p::Builtins::do_typeset,
-                 shopt     => \&App::sh2p::Builtins::not_implemented,
-                 source    => \&App::sh2p::Builtins::do_source,
+                 'declare' => \&App::sh2p::Builtins::do_typeset,
+                 'shopt'   => \&App::sh2p::Builtins::not_implemented,
+                 'source'  => \&App::sh2p::Builtins::do_source,
                );
 
 my %perl_builtins =
                ( 'awk'     => [\&App::sh2p::Builtins::advise,'Perl code, often split'],
                  'basename'=> [\&App::sh2p::Builtins::advise,'File::Basename::basename'],
                  'cat'     => [\&App::sh2p::Builtins::advise,'ExtUtils::Command::cat'],
-                 'chmod'   => [\&App::sh2p::Builtins::one4one,'chmod'], 
-                 'chown'   => [\&App::sh2p::Builtins::one4one,'chown'],
-                 cp        => [\&App::sh2p::Builtins::advise,'File::Copy'],
-                 cut       => [\&App::sh2p::Builtins::advise,'split'],
-                 date      => [\&App::sh2p::Builtins::advise,'localtime or POSIX::strftime'],
-                 df        => [\&App::sh2p::Builtins::advise,'Filesys::Df'],
-                 diff      => [\&App::sh2p::Builtins::advise,'File::Compare'],
-                 dirname   => [\&App::sh2p::Builtins::advise,'File::Basename::dirname'],
-                 egrep     => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/}'],
+                 'chmod'   => [\&App::sh2p::Builtins::do_chmod], 
+                 'chown'   => [\&App::sh2p::Builtins::do_chmod],
+                 'cp'      => [\&App::sh2p::Builtins::advise,'File::Copy'],
+                 'cut'     => [\&App::sh2p::Builtins::advise,'split'],
+                 'date'    => [\&App::sh2p::Builtins::advise,'localtime or POSIX::strftime'],
+                 'df'      => [\&App::sh2p::Builtins::advise,'Filesys::Df'],
+                 'diff'    => [\&App::sh2p::Builtins::advise,'File::Compare'],
+                 'dirname' => [\&App::sh2p::Builtins::advise,'File::Basename::dirname'],
+                 'egrep'   => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/}'],
                  'eval'    => [\&App::sh2p::Builtins::one4one,'eval'],
                  'exec'    => [\&App::sh2p::Builtins::advise,'exec or pipe (co-processes) or open (file descriptors)'],		
-                 expr      => [\&App::sh2p::Builtins::do_expr],
-                 find      => [\&App::sh2p::Builtins::advise,'File::Find'],
-                 file      => [\&App::sh2p::Builtins::advise,'File::Type'],
-                 ftp       => [\&App::sh2p::Builtins::advise,'Net::Ftp'],
+                 'expr'    => [\&App::sh2p::Builtins::do_expr],
+                 'find'    => [\&App::sh2p::Builtins::advise,'File::Find'],
+                 'file'    => [\&App::sh2p::Builtins::advise,'File::Type'],
+                 'ftp'     => [\&App::sh2p::Builtins::advise,'Net::Ftp'],
                  'grep'    => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/}'],
                  'ln'      => [\&App::sh2p::Builtins::one4one,'link'],
                  'ln -s'   => [\&App::sh2p::Builtins::one4one,'symlink'],
-                 ls        => [\&App::sh2p::Builtins::advise,'glob or opendir/readdir/closedir or stat/lstat'],
-                 mkdir     => [\&App::sh2p::Builtins::one4one,'mkdir'],
-                 mkpath    => [\&App::sh2p::Builtins::advise,'ExtUtils::Command::mkpath'],
-                 mv        => [\&App::sh2p::Builtins::one4one,'rename'],
-                 od        => [\&App::sh2p::Builtins::advise,'ord or printf'],
+                 'ls'      => [\&App::sh2p::Builtins::advise,'glob or opendir/readdir/closedir or stat/lstat'],
+                 'mkdir'   => [\&App::sh2p::Builtins::one4one,'mkdir'],
+                 'mkpath'  => [\&App::sh2p::Builtins::advise,'ExtUtils::Command::mkpath'],
+                 'mv'      => [\&App::sh2p::Builtins::one4one,'rename'],
+                 'od'      => [\&App::sh2p::Builtins::advise,'ord or printf'],
                  'printf'  => [\&App::sh2p::Builtins::one4one,'printf'],
-                 pwd       => [\&App::sh2p::Builtins::advise,'Cwd::getcwd'],
-                 rand      => [\&App::sh2p::Builtins::one4one,'rand'],
+                 'pwd'     => [\&App::sh2p::Builtins::advise,'Cwd::getcwd'],
+                 'rand'    => [\&App::sh2p::Builtins::one4one,'rand'],
                  'rm'      => [\&App::sh2p::Builtins::one4one,'unlink'],
                  'rm -f'   => [\&App::sh2p::Builtins::advise,'ExtUtils::Command::rm_rf'],
                  'sed'     => [\&App::sh2p::Builtins::advise,'s/// (usually)'],
                  'select'  => [\&App::sh2p::Builtins::advise,'Shell::POSIX::select'],
-                 'sleep'   => [\&App::sh2p::Builtins::advise,'sleep or alarm'],
+                 'sleep'   => [\&App::sh2p::Builtins::one4one,'sleep'],
                  'sort'    => [\&App::sh2p::Builtins::one4one,'sort'],
                  'tail'    => [\&App::sh2p::Builtins::advise,'File::Tail'],
                  'telnet'  => [\&App::sh2p::Builtins::advise,'Net::Telnet'],
@@ -207,7 +208,7 @@ sub tokenise {
       }
       
       if ($variable) {
-          if ($char =~ /[^A-Z0-9#@*{}\[\]]/i) {
+          if ($char =~ /[^A-Z0-9#@*\$\-!{}\[\]]/i) {
               $variable = 0;
           }
       }
@@ -269,6 +270,16 @@ sub tokenise {
               $index++;
            }
          }
+         elsif ($char eq '>' && !$comment) {
+           if ($tokens[$index] ne '>') {          # Append? 
+              $index++ if defined $tokens[$index];
+              $tokens[$index] .= $char;
+           }
+           else {
+              $tokens[$index] .= $char;
+              $index++;
+           }
+         }
          else {
             $tokens[$index] .= $char;
          }
@@ -293,7 +304,9 @@ sub identify {
    my ($nested, @in) = @_;
    my @out;
    my $first = $in[0];
-      
+   
+   # Special processing for the first token
+   
    if ($first =~ /^\w+=/) {
       $out[0] = [('ASSIGNMENT', 
                  \&App::sh2p::Handlers::Handle_assignment)];
@@ -304,11 +317,24 @@ sub identify {
                  \&App::sh2p::Handlers::Handle_array_assignment)];
       shift @in
    }
+   elsif ($first eq BREAK) {
+      $out[0] = [('BREAK', 
+                 \&App::sh2p::Handlers::Handle_break)];
+      shift @in
+   }
+   elsif (!$nested && $first =~ /^\$[A-Z0-9#@*{}\[\]]+$/i) { 
+       # Not a variable, but a call (variable contains call name)
+       $out[0] = [('EXTERNAL',
+                  \&App::sh2p::Handlers::Handle_external)];
+       shift @in;
+   }
+
+   # Now process the rest
    
    for my $token (@in) {
       my $type = 'UNKNOWN';
       my $sub  = \&App::sh2p::Handlers::Handle_unknown;
- 
+
       if ($token =~ /^\w+=/) {
          $sub  = \&App::sh2p::Handlers::Handle_assignment;
          $type = 'ASSIGNMENT';
@@ -345,7 +371,7 @@ sub identify {
          $first_char  = substr($token, 0, 1);
          $two_chars   = substr($token, 0, 2) if length($token) > 1;
          $three_chars = substr($token, 0, 3) if length($token) > 2;
-         
+                  
          if (exists $idelimiter{$three_chars}) {
             $type = 'THREE_CHAR_DELIMITER';
             $sub  = $idelimiter{$three_chars};        
@@ -362,7 +388,7 @@ sub identify {
             $type = 'VARIABLE';
             $sub  = \&App::sh2p::Handlers::Handle_variable
          }
-         elsif ( !@out && !$nested && $first_char ne BREAK) {   # Must be first token
+         elsif ( (!@out || (@out == 1 && $out[0]->[0] eq 'BREAK')) && !$nested && $first_char ne BREAK) {   # Must be first token
             $type = 'EXTERNAL';
             $sub = \&App::sh2p::Handlers::Handle_external;
          }
@@ -383,11 +409,6 @@ sub identify {
 sub convert (\@\@) {
    my ($rtok, $rtype) = @_;  
    
-   if (@$rtok != @$rtype ) {
-      print STDERR "rtok: <@$rtok>, rtype: <@$rtype>\n";
-      die "Parser::convert: token and type arrays uneven\n"
-   }
-   
    if ( $DEBUG ) {
       my @caller = caller();
       print STDERR "\nconvert called from @caller\n";
@@ -396,6 +417,11 @@ sub convert (\@\@) {
       print STDERR (map {"$_->[0] "} @$rtype),"\n";
    }
 
+   if (@$rtok != @$rtype ) {
+      print STDERR "rtok: <@$rtok>, rtype: <@$rtype>\n";
+      die "Parser::convert: token and type arrays uneven\n"
+   }
+   
    pop @$rtok if ($rtok->[-1] eq BREAK);
    my $tokens_processed = 0;
    
