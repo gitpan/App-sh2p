@@ -6,7 +6,7 @@ use App::sh2p::Utils;
 use App::sh2p::Handlers;
 
 sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => '@');
+use constant (BREAK => 0x07);
 
 our $VERSION = '0.02';
 
@@ -74,6 +74,10 @@ sub arith {
               # Must be a variable!
               $subtok = "\$$subtok";
           }
+          elsif ($subtok =~ /\$[A-Z0-9#{}\[\]]+/i) {
+              my $special = get_special_var($subtok); 
+              $subtok = $special if (defined $special);
+          }
           
           $out .= "$subtok "
       }
@@ -94,39 +98,84 @@ sub arith {
 sub ksh_test {
 
    my ($statement) = @_;   
+   #print STDERR "ksh_test: <$statement>\n";
    
    # First 2 chars passed should be [[
    $statement =~ s/^\[\[//;
    # Last 2 chars passed should be ]]
-   $statement =~ s/\]\]$//;
+   $statement =~ s/\]\](.*)$//;
+   
+   my $rest = $1;
    
    # extglob
    my $specials = '\@|\+|\?|\*|\!';
+   my @joined;
    
    my @tokens = App::sh2p::Parser::tokenise ($statement);
    my @types  = App::sh2p::Parser::identify (1, @tokens);
    
-   my $index = 0;
-   for my $token (@tokens) {
+   for (my $i = 0; $i < @tokens; $i++) {
+   
+      my $token = $tokens[$i];
+      
+      #print STDERR "ksh_test token: <$token>\n";
+   
       if (exists $convert{$token}) {
-         $token = $convert{$token};
+         $tokens[$i] = $convert{$token};
+         $types[$i] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
          
-         $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+         if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
+             @joined = splice (@tokens, $i+1);
+             splice (@types, $i+1);
+             $i = $#tokens;    # last
+         }
       } 
       elsif (substr($token,0,1) eq '-') {
-          $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+         $types[$i] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+         
+         if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
+             @joined = splice (@tokens, $i+1);
+             splice (@types, $i+1);
+             $i = $#tokens;    # last
+         }
       }
       else {
+      
          # look for shell pattern matching constructs (extglob)
-         if ($token =~ /($specials)\(/) {
-	     error_out ("Unable to convert shell pattern matching <$token>");
-	     $types[$index] = [('OPERATOR', \&App::sh2p::Operators::no_change)];
+         if ($token =~ /^($specials)\(/) {
+             my $char = $1;
+             
+             if ($char eq '+' || $char eq '?' || $char eq '*') {
+                 $types[$i] = [('OPERATOR', \&App::sh2p::Operators::swap1stchar)];  
+             }
+             elsif ($char eq '@') {
+                 $types[$i] = [('OPERATOR', \&App::sh2p::Operators::chop1stchar)];
+             }
+             elsif ($char eq '!') {
+	         if ($tokens[$i-1] eq 'eq') {
+	             $tokens[$i-1] = '!~';
+	         }
+             }
+             else {
+	         error_out ("Unable to convert shell pattern matching <$token>");
+	         $types[$i] = [('OPERATOR', \&App::sh2p::Operators::no_change)];
+	     }
+	     
+	     # Fix previous operator
+	     if ( $i > 0 ) {
+	         if ($tokens[$i-1] eq 'eq') {
+	             $tokens[$i-1] = '=~';
+	         }
+	         elsif ($tokens[$i-1] eq 'ne') {
+	             $tokens[$i-1] = '!~';
+	         }
+	     }
 	 }
 	 elsif ($token eq '!') {
 	     $g_not = 1;
 	 }
       }
-      $index++;
+
    }
 
    if ($g_not) {
@@ -137,8 +186,22 @@ sub ksh_test {
       out '( ';   
    }
    
+   # Operators & stuff
    App::sh2p::Parser::convert (@tokens, @types);
-   out ' )';
+      
+   if (@joined) {     
+       App::sh2p::Parser::join_parse_tokens ('.', @joined);
+   }
+   
+   out ' ) ';
+   
+   # We haven't finished yet!
+   if ($rest) {
+       $rest =~ s/^\s+//;     # Remove leading whitespace
+       my @tokens = ($rest);
+       my @types  = App::sh2p::Parser::identify (2, @tokens);          
+       App::sh2p::Parser::convert (@tokens, @types);          
+   }
    
    return  1;
 }
@@ -168,8 +231,9 @@ sub sh_test {
       }
    }
 
-   # Last char passed may be ]
-   $statement =~ s/\]$//;
+   # Last char passed may be ] (might not, because of 'test')
+   $statement =~ s/\](.*)$//;;  
+   my $rest = $1;
    
    # glob
    my $specials = '\[|\*|\?';
@@ -212,7 +276,14 @@ sub sh_test {
    
    App::sh2p::Parser::convert (@tokens, @types);
    out ' )';
-      
+
+   # We haven't finished yet!
+   if (defined $rest && $rest) {
+       my @tokens = ($rest);
+       my @types  = App::sh2p::Parser::identify (2, @tokens);          
+       App::sh2p::Parser::convert (@tokens, @types);          
+   }
+
    return  $ntok;
 }
 
@@ -242,6 +313,7 @@ sub Handle_if {
        $ntok += process_second_statement(1, @statements);
    }
    
+   $g_context = '';
    return $ntok;
 }
 
@@ -254,13 +326,11 @@ sub Handle_fi {
    out "\n";
    iout "}\n";
    
-   $g_context = '';
-   
    return 1;
 }
 
 #####################################################
-
+
 sub Handle_not {
     $g_not = 1;
     return 1;
@@ -283,7 +353,7 @@ sub Handle_then {
       
    return $ntok;
 }
-
+
 #####################################################
 
 sub Handle_else {
@@ -311,7 +381,7 @@ sub Handle_else {
 #####################################################
 
 sub Handle_elif {
-   my ($cmd, @statements) = @_;
+   my ($cmd, @statements) = @_;
    my $ntok = 1;
 
    dec_indent(); 
@@ -327,22 +397,20 @@ sub Handle_elif {
        $ntok += process_second_statement(1, @statements);
    }
 
+   $g_context = '';
+
    return $ntok;
 }
 
 #####################################################
-# Thank-you, the Perl Cookbook 
-# http://www.unix.com.ua/orelly/perl/cookbook/ch06_10.htm
-# Unfortunatly there is more to shell pattern matching than
-# the Cookbook says, lots of problems.   
 # see http://www.perlmonks.com/?node_id=708493
 #    $globstr =~ s{(?:^|(?<=[^\\]))(.)} { $patmap{$1} || "\Q$1" }ge;
-
+# nested : 1 do not add ^ and $
+# minimal: 1 do a minimal match
 sub glob2pat {
-    my $globstr = shift;
+    my ($globstr, $nested, $minimal) = @_;
     my $inside_br = 0;
     my @chars = (split '', $globstr);
-    #print STDERR "glob2pat: @chars\n";
     
     # C style used because I need to skip-ahead and look-behind
     for (my $i; $i < @chars; $i++) {
@@ -361,7 +429,12 @@ sub glob2pat {
         }
         elsif (! $inside_br) {
             if ($chars[$i] eq '*') {
-                $chars[$i] = '.*'
+                if (defined $minimal && $minimal) {
+                    $chars[$i] = '.*?'
+                }
+                else {
+                    $chars[$i] = '.*'
+                }
             }
             elsif ($chars[$i] eq '?') {
                 $chars[$i] = '.'
@@ -370,7 +443,12 @@ sub glob2pat {
     }
     
     local $" = '';
-    return "^@chars\$";
+    if (defined $nested && $nested) {
+        return "@chars";
+    }
+    else {
+        return "^@chars\$";
+    }
 }
 
 #####################################################
@@ -428,6 +506,8 @@ sub Handle_case {
         iout ("}\n");
     }
     
+    $g_context = '';
+    
     return $ntok;
 }
 
@@ -439,7 +519,6 @@ sub Handle_esac {
 
     Handle_case (@g_case_statements);
 
-    $g_context = '';
     dec_indent();
     dec_block_level();
     @g_case_statements = ();
@@ -476,6 +555,15 @@ sub Handle_for {
    
    @for_tokens = splice (@list, 0, $i+1);
    
+   if (!@for_tokens) {
+       if (ina_function()) {
+           out '@_';
+       }
+       else {
+           out '@ARGV';
+       }
+   }
+   
    # Often a variable to be converted to a list
    # Note: excludes @ and * which indicate an array
    if ($for_tokens[0] =~ /\$[A-Z0-9#{}\[\]]+/i) {
@@ -489,10 +577,13 @@ sub Handle_for {
        my @types  = App::sh2p::Parser::identify (2, @for_tokens);
        App::sh2p::Parser::convert (@for_tokens, @types);
    }
+   
    out ')';
    
    my @types  = App::sh2p::Parser::identify (2, @list);
    App::sh2p::Parser::convert (@list, @types); 
+
+   $g_context = '';
 
    return $ntok;
 }
@@ -514,6 +605,7 @@ sub Handle_while {
        $ntok += process_second_statement(1, @statements);
    }
    
+   $g_context = '';
    return $ntok;
 }
 
@@ -527,13 +619,14 @@ sub Handle_until {
    # First token is 'until'
    iout "$cmd ";
    
-   $g_context = 'while';
+   $g_context = 'until';
    
    # 2nd command?
    if (@statements) {
        $ntok += process_second_statement(1, @statements);
    }
    
+   $g_context = '';
    return $ntok;
 }
 
@@ -552,8 +645,6 @@ sub Handle_done {
    dec_block_level();
    out "\n";
    iout "}\n";
-   
-   $g_context = '';
    
    return 1;
 }
@@ -581,7 +672,6 @@ sub Handle_function {
    out "sub $name ";
    
    set_user_function($name);
-   $g_context = 'function';
    
    return 2;
 }
@@ -608,8 +698,6 @@ sub close_brace {
 
    unmark_function();
    dec_block_level();
-
-   $g_context = '';
 
    return 1;
 }
@@ -653,9 +741,9 @@ sub process_second_statement {
        out '('
    }
    
-   App::sh2p::Handlers::no_semi_colon();
+   App::sh2p::Handlers::no_semi_colon() if $cmd;
    App::sh2p::Parser::convert (@tokens, @types);
-   App::sh2p::Handlers::reset_semi_colon();
+   App::sh2p::Handlers::reset_semi_colon() if $cmd;
 
    if ($paren) {
        out ')'

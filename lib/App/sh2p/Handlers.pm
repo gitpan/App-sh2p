@@ -7,7 +7,7 @@ use App::sh2p::Utils;
 use App::sh2p::Here;
 
 sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => '@');
+use constant (BREAK => 0x07);
 
 our $VERSION = '0.02';
 
@@ -87,7 +87,6 @@ sub Handle_assignment {
       
       # Avoid recursion
       die "Nested assignment $in" if $types[0] eq 'ASSIGNMENT';
-      #print_types_tokens (@types, @tokens);
       
       App::sh2p::Parser::convert (@tokens, @types);
       reset_semi_colon();
@@ -189,12 +188,14 @@ sub Handle_variable {
    my $new_token;
    
    #print STDERR "Handle_variable: <$token>\n";
+   #my @caller = caller();
+   #print STDERR "Called from @caller\n";
    
    # Check for specials
    if ($new_token = get_special_var($token)) {
       $token = $new_token;
    }
-   elsif ( $token =~ s/^\$#(.+)/\$$1/ ) {
+   elsif ( $token =~ s/^\$#(\w+)/\$$1/ ) {
         out "length($token)";
         return 1;
    }
@@ -218,17 +219,25 @@ sub Handle_variable {
 
 sub Handle_expansion {
     my ($token) = @_;
+    my $ntok;
     
+    #   print STDERR "Handle_expansion: <$token>\n";
+    #   my @caller = caller();
+    #   print STDERR "Called from @caller\n";
+
     # Strip out the braces
-    $token =~ s/\$\{(.*)\}/\$$1/;
+    $token =~ s/\$\{(.*?)\}(.*?)/\$$1/;
+    my $suffix = $2;
     
-    #print STDERR "Handle expansion : <$token>\n";
-    
-    if ( $token =~ /(.+):([:?\-=+]){1,2}([^:?\-=+]+)/ ) {
-        my $var    = $1;
+    if ( $token =~ /(\w+)([:?\-=+]{1,2})([^:?\-=+]+)/ ) {
+        my $var    = '$'.$1;
         my $qual   = $2;
         my $extras = $3;
-        
+    
+        # Remove the : 
+        # Done this way in case further modification is required
+        $qual =~ s/^://;
+   
         if ($qual eq '?') {
             if (! $extras) {
                 $extras = "'$var undef or not set'";
@@ -238,27 +247,76 @@ sub Handle_expansion {
             out ("print STDERR $extras,\"\\n\" if (! defined $var or ! $var);");
         }
         elsif ($qual eq '=') {
-            out ("$var = $extras if (! defined $var or ! $var);");
+            #out ("$var = \"$extras\" if (! defined $var or ! $var);");
+ 	    out ("(defined $var or $var) || $var = ");
+ 	    my @tmp = ($extras);
+ 	    my @types  = App::sh2p::Parser::identify (1, @tmp);     
+ 	    App::sh2p::Parser::convert (@tmp, @types);
         }
         elsif ($qual eq '-') {
-	    out ("(defined $var or $var) || $extras;");
+	    out ("(defined $var or $var) || ");
+	    my @tmp = ($extras);
+	    my @types  = App::sh2p::Parser::identify (1, @tmp);     
+	    App::sh2p::Parser::convert (@tmp, @types);
         }
         elsif ($qual eq '+') {
-	    out ("(! defined $var or ! $var) || $extras;");
-	}
+	    out ("(! defined $var or ! $var) || ");
+	    my @tmp = ($extras);
+	    my @types  = App::sh2p::Parser::identify (1, @tmp);     
+	    App::sh2p::Parser::convert (@tmp, @types);
+  	}
         else {
             error_out ("Pattern $qual not currently supported");
             out ($token);
         }
-        return 1;
+        $ntok = 1;
     }    
     elsif ( $token =~ s/^\$#(.+)/\$$1/ ) {
         out "length($token)";
-        return 1;
+        $ntok = 1;
     }
-    else {
-        return Handle_variable($token);
+    elsif ($token =~ /^(\$\w+)([%#]{1,2})(.*)/) {
+        my $var     = $1;
+        my $mod     = $2;
+        my $pattern = $3;
+        
+        #print STDERR "Expansion 3: var: <$var> mod: <$mod> pattern: <$pattern>\n";
+        
+        if ($mod eq '#')  {  # delete the shortest on the left
+            $pattern = App::sh2p::Compound::glob2pat($pattern,1,1);
+            out "($var =~ /^(?:$pattern)+?(.*)/)[0]";
+        }
+        elsif ($mod eq '##') {  # delete the longest on the left
+            $pattern = App::sh2p::Compound::glob2pat($pattern,1,0);
+            out "($var =~ /^(?:$pattern)+(.*)/)[0]";    
+        }
+        if ($mod eq '%')  {  # delete the shortest on the right
+            $pattern = App::sh2p::Compound::glob2pat($pattern,1,1);
+            out "($var =~ /^(.*)(?:$pattern)+?\$/)[0]";
+        }
+        elsif ($mod eq '%%') {  # delete the longest on the right
+            $pattern = App::sh2p::Compound::glob2pat($pattern,1,0);
+            out "($var =~ /^(.*?)$pattern\$/)[0]";    
+        }
+        
+        $ntok = 1;
     }
+    else {     
+        $ntok = Handle_variable($token);
+    }
+    
+    if ($suffix) {
+        out '.';
+        my @tokens = App::sh2p::Parser::tokenise ($suffix);
+        my @types  = App::sh2p::Parser::identify (1, @tokens);
+   
+        App::sh2p::Handlers::no_semi_colon();
+        App::sh2p::Parser::convert (@tokens, @types);
+        App::sh2p::Handlers::reset_semi_colon();
+    }
+    
+    # Suffix was in the same token
+    return $ntok;
 }
 
 ############################################################################
@@ -267,7 +325,7 @@ sub Handle_delimiter {
 
    my $ntok;
    my ($tok) = @_;
-   
+
    if ($tok =~ /^\(\((.+)=(.+)\)\)$/) {
       my $lhs = $1;
       my $rhs = $2;
@@ -280,6 +338,7 @@ sub Handle_delimiter {
       out '`';
       $g_unterminated_backtick = 0;
       dec_indent();
+      $ntok = 1;       # 0.03 added
    }
    elsif ($tok eq ';') {
       out "\n";
@@ -295,9 +354,12 @@ sub Handle_delimiter {
       my @cmd = split (/\s+/, $cmd);
       my @perlbi;
       
+      #print STDERR "Handle_delimiter <$tok>\n";
+      
       if (@perlbi = App::sh2p::Parser::get_perl_builtin($cmd[0])) {
+          
           # Do my best to trap unnecessary child processes
-          out "\n";    # For tidy messages
+          out "\n" if query_semi_colon();    # For tidy messages
           &{$perlbi[0]}(@cmd,$rest);
       }
       else {
@@ -306,6 +368,7 @@ sub Handle_delimiter {
       $ntok = 1;
    }
    elsif (substr($tok,0,1) eq '"') {
+
       interpolation($tok);
       $ntok = 1;
    }
@@ -318,20 +381,112 @@ sub Handle_delimiter {
 }
 
 ############################################################################
-# simplistic - should not split around whitespace
+
 sub interpolation {
    my ($string) = @_;
-   my $pos = 0;
+   my $first = 1;
+   my $delimiter = '';
+   
+   # strip out leading & trailing quotes
+   $string =~ s/^\"(.*)\"$/$1/;
+   
+   # Insert leading quote to balence end
+   # Why?  Because the string might not be quoted 
+   out ('"');
+   
+   my @chars = split '', $string;
+   
+   # We need "". for print statement
+   
+   for (my $i = 0; $i < @chars; $i++) {
+   
+       if ($chars[$i] eq '\\') {   # esc
+           out $chars[$i];
+           $i++;
+           out $chars[$i];
+           $first = 0;
+       }
+       elsif ($chars[$i] eq '`') {
+           out '".';
+           $delimiter = '`';
+           
+           my $cmd = $chars[$i];
+           $i++;
+           
+           while ($i < @chars) {
+               $cmd .= $chars[$i];
+               $i++;
+               last if ($chars[$i] eq $delimiter);
+           }
 
-   # Allow backticks 
-   while ($string =~ /(.*?)(\$\(?\w+\)?)/g) {
-       out $1;
-       my $var = $2;
-       Handle_variable($var);
-       $pos = pos($string);
+           Handle_delimiter ($cmd);
+           out '."' if $i < (@chars-1);
+       }
+       elsif ($chars[$i] eq '$') {
+           my $token = $chars[$i];
+           $i++;
+           
+           if ($chars[$i] eq '(') {
+               out '".';
+               $delimiter = ')';
+               while ($i < @chars) {
+                   $token .= $chars[$i];
+                   $i++;
+                   if ($chars[$i] eq $delimiter) {
+                       $token .= $chars[$i];
+                       last
+                   }
+               }
+               Handle_2char_qx ($token);
+               out '."' if $i < (@chars-1);
+           }
+           elsif ($chars[$i] eq '{') {
+               out '".';
+               $delimiter = '}';
+               while ($i < @chars) {
+                   $token .= $chars[$i];
+                   $i++;
+                   if ($chars[$i] eq '}') {
+                       $token .= $chars[$i];
+                       last
+                   }
+               }
+               Handle_expansion ($token);
+               out '."' if $i < (@chars-1);
+           }
+           else {
+               $delimiter = '';
+               while ($i < @chars) {
+                   $token .= $chars[$i];                 
+                   last if ($chars[$i] !~ /[a-z0-9\#\[\]\@\*]/i);
+                   $i++;
+               }
+               
+               # Remove trailing whitespace, then put it back
+               my $whitespace = '';
+               
+               if ($token =~ s/(\s+)$//) {
+                   $whitespace = $1;
+               }
+               
+               out '".' if ! can_var_interpolate($token);
+               
+               Handle_variable ($token);
+               
+               out '."'if ! can_var_interpolate($token);
+               
+               out $whitespace if ($whitespace);
+           }
+       }
+       else {
+           $delimiter = '';
+           out $chars[$i];
+       }
    }
    
-   out substr($string, $pos);
+   if ($chars[-1] ne $delimiter) {
+       out '"';
+   }
    
 }
 
@@ -351,8 +506,12 @@ sub Handle_2char_qx {
       
       if (@perlbi = App::sh2p::Parser::get_perl_builtin($cmd[0])) {
           # Do my best to trap unnecessary child processes
-          out "\n";    # For tidy messages
+          out "\n" if query_semi_colon();    # For tidy messages
           &{$perlbi[0]}(@cmd,$rest);
+      }
+      elsif (is_user_function($cmd[0])) {
+          error_out "User function '$cmd[0]' called in back-ticks";
+          iout "`$cmd`$rest";
       }
       else {
           iout "`$cmd`$rest";
@@ -361,12 +520,15 @@ sub Handle_2char_qx {
       $ntok = 1;
    }
    elsif ( substr($tok, 0, 2) eq '$(' ) {
-      $tok =~ s/\$\(/`/; 
-      $g_unterminated_backtick = 1;
+      $tok =~ s/\$\(/`/;
       
+      # This is the ONLY place this is set
+      $g_unterminated_backtick = 1;   
+
       my @tokens = App::sh2p::Parser::tokenise ($tok);
       my @types  = App::sh2p::Parser::identify (1, @tokens); 
-            
+      
+      #print_types_tokens (\@types,\@tokens);      
       App::sh2p::Parser::convert (@tokens, @types);
       
       inc_indent();
@@ -396,11 +558,14 @@ sub Handle_external {
        $last = pop @args;
        $ntok++;
    }
-      
+   
+   #print STDERR "Handle_external: <@args>\n";
    if ($g_unterminated_backtick) {
+   
       if ($args[-1] eq ')') {
          $args[-1] = '`';
          $g_unterminated_backtick = 0; 
+            print STDERR "Handle_external: <@args>\n";
          iout "@args $last";
          dec_indent();
       }
@@ -441,17 +606,22 @@ sub Handle_external {
       
       # Parse arguments
       if ( $user_function ) {
-          for (my $i; $i < @args; $i++) {         
-              $ntok++;
-              # Escape embedded quotes
-              $args[$i] =~ s/\"/\\\"/g;
-              #"help syntax highlighter
-              $args[$i] = "\"$args[$i]\"";
-              $args[$i] .= ',' if $i < $#args;
-          } 
-          
+      
           iout "$func (";
-	  interpolation ("@args");
+          
+          if (@args) {
+              for (my $i = 0; $i < @args; $i++) {         
+                  $ntok++;
+                  # Escape embedded quotes
+                  $args[$i] =~ s/\"/\\\"/g;
+                  #"help syntax highlighter
+                  $args[$i] = "\"$args[$i]\"";
+                  $args[$i] .= ',' if $i < $#args;
+              } 
+            
+	      interpolation ("@args");
+	  }
+	  
 	  out ")$semi $last";
 
       }
@@ -463,13 +633,24 @@ sub Handle_external {
               #"help syntax highlighter
           }
           
-          iout "$func (\"";
+          # interpolation adds quotes
+          iout "$func (";
 	  interpolation ("@args");
-          out "\")$semi $last";
+          out ")$semi $last";
       }
       
+      # Added 0.03
+      if ($func eq 'system') {
+          my $context = App::sh2p::Compound::get_context();
+          if ($context eq 'if' || $context eq 'while') {
+              out 'eq 0';
+          }
+          elsif ($context eq 'until') {
+              out 'ne 0';
+          }
+      }
       
-      iout "\n" if query_semi_colon();
+      out "\n" if query_semi_colon();
    }
    
    #local $" = '|';
@@ -483,33 +664,26 @@ sub Handle_external {
 sub Handle_Glob {
 
    my (@tokens) = @_;
-   my $glob_check = '[*\[\]?]';
-   my $pattern;
-   my $ntok = 0;
+   my $ntok = @tokens;
    
-   for (@tokens) {
-      if (/$glob_check/) {
-         $pattern .= $_;
-         $ntok++
-      }
-   }
-   
-   iout "glob(\"$pattern\")";
+   local $" = '';
+   iout "(glob(\"@tokens\"))";
    
    return $ntok;
 }
 
 ############################################################################
 
-#sub Handle_here_doc {
-#
-#}
-
-############################################################################
-
 sub Handle_unknown {   
 
-   out "\"$_[0]\"";
+   my ($token) = @_;
+
+   if ($token =~ /^[-+]?\d+$/) {
+       out "$token";
+   }
+   else {
+       out "\"$token\"";
+   }
    
    return 1;
 }

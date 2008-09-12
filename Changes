@@ -21,3 +21,26 @@ Revision history for Perl extension App::sh2p.
 	- fixed bug where calculations failed to have a trailing ;
 	- fixed bug where return without an argument had a \n before ;
 	- fixed bug where external calls from variables were not handled correctly
+0.03  Fri Sep 12 17:00:00 2008
+	- improvements to POD
+	- improvements to formatting and indentation
+	- improved numeric handling
+	- support for local (alias in ksh, built-in in Bash)
+	- support for shift
+	- support for default read variable $REPLY
+	- support for extended pattern matching
+	- support for exec (but not the fd version)
+	- added option support for unset
+	- added support for autoload and typeset -fu
+	- #! line now takes the path from the current perl configuration
+	- improved environment variable handling
+	- improved variable expansion, now supports ${var##pat} and ${var%%pat}
+	- output file is now given the same permissions as the input
+	- the default list in 'for' is now @ARGV in main, or @_ in a subroutine
+	- ~ added to glob characters
+	- improved handling of multi-line statements
+	- fixed bug where $0 was translated to $ARGV[-1]
+	- fixed bug where a free-standing colon (':') failed
+	- fixed bug concerning comment after redirection
+	- fixed bug when testing the 'system' command - now test explictly for zero return.
+	- fixed bug where a user function call with no arguments gave a single double-quote.

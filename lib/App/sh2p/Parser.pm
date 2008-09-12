@@ -5,9 +5,9 @@ use App::sh2p::Compound;
 use App::sh2p::Utils;
 
 sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => '@');
+use constant (BREAK => 0x07);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 our $DEBUG   = 0;
 
 ###########################################################
@@ -35,17 +35,17 @@ my %icompound =
                 );
    
 my %ioperator =
-               ( '&&' => \&App::sh2p::Operators::no_change,
-                 '||' => \&App::sh2p::Operators::no_change,
+               ( '&&' => \&App::sh2p::Operators::shortcut,
+                 '||' => \&App::sh2p::Operators::shortcut,
                  '|&' => 3,
                  '&'  => 4,
-                 '+'  => \&App::sh2p::Operators::no_change,
-                 '-'  => \&App::sh2p::Operators::no_change,
-                 '*'  => \&App::sh2p::Operators::no_change,
-                 '/'  => \&App::sh2p::Operators::no_change,
-                 '%'  => \&App::sh2p::Operators::no_change,
-                 '?'  => \&App::sh2p::Operators::no_change,
-                 '!'  => \&App::sh2p::Compound::Handle_not,
+                 #'+'  => \&App::sh2p::Operators::no_change,
+                 #'-'  => \&App::sh2p::Operators::no_change,
+                 #'*'  => \&App::sh2p::Operators::no_change,
+                 #'/'  => \&App::sh2p::Operators::no_change,
+                 #'%'  => \&App::sh2p::Operators::no_change,
+                 #'?'  => \&App::sh2p::Operators::no_change,
+                 #'!'  => \&App::sh2p::Compound::Handle_not,
                 );
 
 my %iglob =
@@ -54,6 +54,7 @@ my %iglob =
                  '['  => \&App::sh2p::Handlers::Handle_Glob,
                  '?'  => \&App::sh2p::Handlers::Handle_Glob,
                  ']'  => \&App::sh2p::Handlers::Handle_Glob,
+                 '~'  => \&App::sh2p::Handlers::Handle_Glob,
                 );
                 
 my %idelimiter =
@@ -62,7 +63,7 @@ my %idelimiter =
                  '`'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '$('  => \&App::sh2p::Handlers::Handle_2char_qx,
                  #'<<'  => \&App::sh2p::Handlers::Handle_here_doc,
-                 '${'  => \&App::sh2p::Handlers::Handle_expansion,
+                 '${'  => \&App::sh2p::Handlers::Handle_expansion,   # Problems, do specific testing?
                  '('   => \&App::sh2p::Handlers::Handle_delimiter,
                  ')'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '['   => \&App::sh2p::Compound::sh_test,
@@ -75,54 +76,57 @@ my %idelimiter =
                 ); 
                 
 my %ibuiltins =
-               ( ':'       => \&App::sh2p::Builtins::do_colon,
-                 '.'       => \&App::sh2p::Builtins::do_source,
-                 'alias'   => 2,
-                 'bg'      => 3,
-                 'bind'    => 4,
-                 'break'   => \&App::sh2p::Builtins::do_break,
-                 'builtin' => 6,
-                 'cd'      => \&App::sh2p::Builtins::do_cd,
-                 'command' => 8,
-                 'continue'=> \&App::sh2p::Builtins::do_continue,
-                 'echo'    => \&App::sh2p::Builtins::do_print,
-                 'eval'    => 2,
-                 'exec'    => 3,
-                 'exit'    => \&App::sh2p::Builtins::do_exit,
-                 'export'  => \&App::sh2p::Builtins::do_export,
-                 'false'   => 6,
-                 'fc'      => 7,
-                 'fg'      => 8,
-                 'getopts' => 9,
-                 'integer' => \&App::sh2p::Builtins::do_integer,
-                 'hash'    => 10,
-                 'jobs'    => 11,
-                 'kill'    => \&App::sh2p::Builtins::do_kill,
-                 'let'     => 3,
-                 'print'   => \&App::sh2p::Builtins::do_print,
-                 'pwd'     => 5,
-                 'read'    => \&App::sh2p::Builtins::do_read,
-                 'readonly'=> 7,
-                 'return'  => \&App::sh2p::Builtins::do_return,
-                 'set'     => \&App::sh2p::Builtins::do_set,
-                 'shift'   => 10,
-                 'test'    => \&App::sh2p::Compound::sh_test,
-                 '['       => \&App::sh2p::Compound::sh_test,
-                 'time'    => 12,
-                 'times'   => 13,
-                 'trap'    => 14,
-                 'true'    => 15,
-                 'typeset' => \&App::sh2p::Builtins::do_typeset,
-                 'ulimit'  => 17,
-                 'umask'   => 18,
-                 'unalias' => 19,
-                 'unset'   => \&App::sh2p::Builtins::do_unset,
-                 'wait'    => 21,
-                 'whence'  => 22,
+               ( ':'        => \&App::sh2p::Builtins::do_colon,
+                 '.'        => \&App::sh2p::Builtins::do_source,
+                 'alias'    => 2,
+                 'autoload' => \&App::sh2p::Builtins::do_autoload,
+                 'bg'       => 3,
+                 'bind'     => 4,
+                 'break'    => \&App::sh2p::Builtins::do_break,
+                 'builtin'  => 6,
+                 'cd'       => \&App::sh2p::Builtins::do_cd,
+                 'command'  => 8,
+                 'continue' => \&App::sh2p::Builtins::do_continue,
+                 'echo'     => \&App::sh2p::Builtins::do_print,
+                 'eval'     => 2,
+                 'exec'     => \&App::sh2p::Builtins::do_exec,
+                 'exit'     => \&App::sh2p::Builtins::do_exit,
+                 'export'   => \&App::sh2p::Builtins::do_export,
+                 'false'    => 6,
+                 'fc'       => 7,
+                 'fg'       => 8,
+                 'functions'=> \&App::sh2p::Builtins::do_functions,
+                 'getopts'  => 9,
+                 'integer'  => \&App::sh2p::Builtins::do_integer,
+                 'hash'     => 10,
+                 'jobs'     => 11,
+                 'kill'     => \&App::sh2p::Builtins::do_kill,
+                 'let'      => 3,
+                 'print'    => \&App::sh2p::Builtins::do_print,
+                 'pwd'      => 5,
+                 'read'     => \&App::sh2p::Builtins::do_read,
+                 'readonly' => 7,
+                 'return'   => \&App::sh2p::Builtins::do_return,
+                 'set'      => \&App::sh2p::Builtins::do_set,
+                 'shift'    => \&App::sh2p::Builtins::do_shift,
+                 'test'     => \&App::sh2p::Compound::sh_test,
+                 '['        => \&App::sh2p::Compound::sh_test,
+                 'time'     => 12,
+                 'times'    => 13,
+                 'trap'     => 14,
+                 'true'     => 15,
+                 'typeset'  => \&App::sh2p::Builtins::do_typeset,
+                 'ulimit'   => 17,
+                 'umask'    => 18,
+                 'unalias'  => 19,
+                 'unset'    => \&App::sh2p::Builtins::do_unset,
+                 'wait'     => 21,
+                 'whence'   => 22,
                  # Bash specifics
-                 'declare' => \&App::sh2p::Builtins::do_typeset,
-                 'shopt'   => \&App::sh2p::Builtins::not_implemented,
-                 'source'  => \&App::sh2p::Builtins::do_source,
+                 'declare'  => \&App::sh2p::Builtins::do_typeset,
+                 'local'    => \&App::sh2p::Builtins::do_typeset,
+                 'shopt'    => \&App::sh2p::Builtins::do_shopt,
+                 'source'   => \&App::sh2p::Builtins::do_source,
                );
 
 my %perl_builtins =
@@ -188,6 +192,8 @@ sub tokenise {
    my $qx       = 0;
    my $qp       = 0;   # ()
    my $qs       = 0;   # []
+   my $br       = 0;   # {}
+   my $esc      = 0;   # \
    my $comment  = 0;
    my $heredoc  = 0;
    my $variable = 0;
@@ -207,8 +213,14 @@ sub tokenise {
          next;
       }
       
+      if ($esc) {
+         $tokens[$index] .= $char;
+         $esc = 0;
+         next;         
+      }
+      
       if ($variable) {
-          if ($char =~ /[^A-Z0-9#@*\$\-!{}\[\]]/i) {
+          if ($char =~ /[^A-Z0-9#@*\$\-!\{\}\[\]]/i) {
               $variable = 0;
           }
       }
@@ -216,25 +228,35 @@ sub tokenise {
       if ($char eq '$') {
          $variable = 1;
       }
-      
-      if ($char eq '\'') {
+      elsif ($char eq '\'') {
          $q = $q?0:1;
       }
-      
-      if ($char eq '`') {
+      elsif ($char eq '`') {
          $qx = $qx?0:1;
       }
-      
-      if ($char eq '"') {
+      elsif ($char eq '"') {
          $qq = $qq?0:1;
-      }
-      
-      # Take into account nested []
-      if ($char eq '[') {
+      }    
+      elsif ($char eq '[') {  # Take into account nested []
          $qs++;
       }
       elsif ($qs && $char eq ']') {
          $qs--
+      }
+      elsif ($char eq '{') {  # Take into account nested {}
+         $br++;
+      }
+      # Major difference with v.0.03
+      elsif ($br && $char eq '}' && !$q && !$qq && !$qx && !$qp && !$qs) {   
+         $tokens[$index] .= $char;
+         $index++;
+         $br--;
+         next;
+      }
+      elsif ($char eq '\\') {
+         $tokens[$index] .= $char;
+         $esc = 1;
+         next;
       }
       
       # Take into account nested ()
@@ -246,12 +268,12 @@ sub tokenise {
       }
 
       # Not inside a delimiter
-      if (!$q && !$qq && !$qx && !$qp && !$qs) {
+      if (!$q && !$qq && !$qx && !$qp && !$qs && !$br) {
          if ($char eq '#' && !$variable) {
             $comment = 1
          }
          
-         if ($char =~ /\s/ && !$comment) {      
+         if ($char =~ /\s/ && !$comment) {
             $index++ if defined $tokens[$index];
          }
          elsif ($char eq ';' && !$comment) {
@@ -332,6 +354,9 @@ sub identify {
    # Now process the rest
    
    for my $token (@in) {
+   
+      #print STDERR "Identify: <$token>\n";
+   
       my $type = 'UNKNOWN';
       my $sub  = \&App::sh2p::Handlers::Handle_unknown;
 
@@ -355,11 +380,11 @@ sub identify {
          $sub  = $iglob{$token};
          $type = 'GLOB';
       }
-      elsif (exists $ibuiltins{$token}) {
+      elsif (exists $ibuiltins{$token} && $nested < 2) {
          $sub  = $ibuiltins{$token};
          $type = 'BUILTIN'
       }
-      elsif (exists $perl_builtins{$token}) {
+      elsif (exists $perl_builtins{$token} && $nested < 2) {
          $sub  = $perl_builtins{$token}[0];
          $type = 'PERL_BUILTIN'
       }      
@@ -384,7 +409,11 @@ sub identify {
             $type = 'SINGLE_DELIMITER';
             $sub  = $idelimiter{$first_char};
          }
-         elsif ($first_char eq '$' && $token =~ /^\$[A-Z0-9#@*{}\[\]]+$/i) {        
+         elsif ($first_char eq '~') {
+            $type = 'GLOB';
+            $sub  = $iglob{$first_char};
+         }
+         elsif ($first_char eq '$' && $token =~ /^\$[A-Z0-9#@*\{\}\[\]]+$/i) {        
             $type = 'VARIABLE';
             $sub  = \&App::sh2p::Handlers::Handle_variable
          }
@@ -395,6 +424,14 @@ sub identify {
          elsif ($first_char eq BREAK) {
             $type = 'BREAK';
             $sub = \&App::sh2p::Handlers::Handle_break;
+         }
+         elsif (exists $ioperator{$two_chars} && $nested) {
+	    $sub  = $ioperator{$two_chars};
+	    $type = 'OPERATOR'
+	 }
+         elsif (exists $ioperator{$first_char} && $nested) {
+            $sub  = $ioperator{$first_char};
+            $type = 'OPERATOR'
          }
       }
       push @out, [($type, $sub)];
@@ -445,7 +482,33 @@ sub convert (\@\@) {
    }
    
 }
-
+
+########################################################
+
+sub join_parse_tokens {
+
+    my ($sep, @args) = @_;
+ 
+    # Is final token a comment?    
+    pop @args if substr($args[-1],0,1) eq '#';
+
+    my $ntok = @args;
+
+    # C style for loop because I need to check the position
+    for (my $i = 0; $i < @args; $i++) {
+   
+        my @tokens = ($args[$i]);
+        my @types  = identify (2, @tokens);
+       
+        # print_types_tokens(\@types, \@tokens);
+       
+        convert (@tokens, @types);       
+        out $sep if $i < $#args;      
+    }
+
+    return $ntok;
+}
+
 ###########################################################
 
 sub analyse_pipeline {
@@ -456,7 +519,8 @@ sub analyse_pipeline {
     error_out "Pipeline '@args' detected";
     
     # Get commands, sometimes the | is separate, sometimes not
-    @ args = split /\|/, "@args";
+    @args = split /\|/, "@args";
+    
     App::sh2p::Handlers::no_semi_colon();
     
     for (@args) {

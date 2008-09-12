@@ -1,4 +1,4 @@
-App-sh2p version 0.01
+App-sh2p version 0.03
 =====================
 
 This Perl script, and associated modules in the sh2p directory, 
@@ -13,7 +13,18 @@ feedback will be welcome and should be sent to CLIVE@cpan.org.
 
 SYNOPSIS
 
-  sh2p.pl [-i] [-r] [script-name] [...]
+  sh2p.pl [-i] [-r] [-f] script-name output-file | script-name [...] output-directory
+
+-i Do not use integer
+-r Do not use runtime
+-f Clobber output files in the output directory
+
+This Perl script, and associated modules in the sh2p directory, 
+will attempt to convert the supplied shell script/s to Perl. 
+
+Only shells based upon the POSIX standard are supported.  This include most popular
+shells like Bourne, Korn, and Bash, but specifically EXCLUDES C shell (csh, tcsh).
+
 
 INSTALLATION
 
@@ -30,6 +41,7 @@ This module requires these other modules and libraries:
 
   Getopt::Std
   File::Basename
+  Config
 
 COPYRIGHT AND LICENCE
 

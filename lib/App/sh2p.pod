@@ -7,12 +7,17 @@ App::sh2p - Perl program to aid for conversion from UNIX shell to Perl
 
   sh2p.pl [-i] [-r] [-f] script-name output-file | script-name [...] output-directory
 
--i Do not use integer
--r Do not use runtime
--f Clobber output files in the output directory
+  -i Do not use integer
+  -r Do not use runtime
+  -f Clobber output files in the output directory
 
 This Perl script, and associated modules in the sh2p directory, 
-will attempt to convert the supplied shell script/s to Perl.  
+will attempt to convert the supplied shell script/s to Perl. 
+
+Only shells based upon the POSIX standard are supported.  This include most popular
+shells like Bourne, Korn, and Bash, but specifically EXCLUDES C shell (csh, tcsh).
+
+Most Korn shell 93 extensions are currently not supported.
 
 CAVEAT: Incorrect shell commands will result in incorrect Perl!
 
@@ -32,12 +37,17 @@ If the directory output form is taken then an output file name is generated from
 input file name, with '.pl' appended (any existing 'extension' will be removed).  If
 this file already exists then the user will be prompted for permission to overwrite it,
 unless the -f (force) option is given.
-  
+
 The generated code will:
+
+Have a #! line generated from $Config{'perlpath'}.
+
     use integer;
+
 The POSIX shell only supports integer arithmetic, this may be supressed with the -i option
           
     use sh2p::Runtime;
+
 This is (currently) required if the shell 'read' statement is used, 
 however it is always included unless supressed with the -r option
   
@@ -48,6 +58,67 @@ These are output whenever sh2p detects code which requires manual intervention,
 which is often.  A message of the format '**** INSPECT: free-text' is written to 
 the output script as a comment.  A similar message is written to STDERR, prefixed 
 by the line number and grouped by file.
+
+=head3 The following line cannot be translated:
+
+A "catch all" message where I give up.  Often when setting shell options
+
+=head3 <func> replaced by Perl built-in <new_func>
+
+Advice to replace the specified program with a Perl alternative
+
+=head3 <func> should be replaced by something like <advise>
+
+Advice to replace the specified program with a Perl alternative
+
+=head3 Multiple levels in 'break $level' not supported
+
+=head3 Multiple levels in 'continue $level' not supported
+
+=head3 Suspious conversion from expr
+
+Many expr commands can be repeated as straight Perl - but not all.
+
+=head3 Pipes/co-processes are not supported, use open
+
+=head3 file descriptors not currently supported
+
+=head3 Unrecognised shopt argument: 
+
+Only a limited number of the Bash 'shopt' options are relevant to Perl
+
+=head3 sourced file should also be converted
+
+The dot '.' or 'source' command has been used (and converted to 'do') 
+but the sourced file should also be converted.
+
+=head3 Only one option supported for typedef or declare
+
+=head3 Unable to convert shell pattern matching <$token>
+
+=head3 Pattern <pattern> not currently supported
+
+=head3 User function <function-name> called in back-ticks
+
+Shell functions can only return values between 0 and 255.  A common technique
+for returning a string is to 'echo' or 'print' the string to STDOUT, then
+call the function in back-ticks (or $(...)), which, in a decent shell, should
+not produce a child process.  This is inappropriate in Perl and the subroutine
+return value should be revised.  This cannot reasonably be automated.
+
+=head3 Writing dir/name.here
+
+See 'Here documents' (below)
+
+=head3 No conversion routine for <name>
+
+=head3 Pipeline detected
+
+=head3 Using $PWD is unsafe: use Cwd::getcwd
+
+The environment variable PWD is set when the shell built-in 'cd' is called.
+The variable is only used by the shell and not reliable in any other language.
+
 
 =head2 Here documents
 
@@ -60,12 +131,58 @@ The heredoc data is extracted from the script and written to a file named
 label.here, where 'label' is the label used to identify the heredoc.
 
 Currently external programs reading from a heredoc require manual intervention.
+Heredocs embedded inside back-ticks (or $(..)) produce a mess (some shells have 
+problems with this as well).
 
 =head2 External programs and built-ins
 
 It is tempting to substitute Perl built-ins for external programs like chmod, rm,
 and so on.  However the return codes are different and require a different testing
 regime.  Therefore these are identified by an INSPECT message.
+
+=head2 Functions
+
+Functions declared externally and loaded dynamically or via '.' will not be known.
+These will generally be seen as unknown commands and default to an external program,
+called using system or back-ticks.  However they may be declared in your script 
+using 'autoload' (or 'typedef -fu'), which will register them as functions with sh2p.
+
+The 'functions' alias, and 'typedef -f', will generate code to give a list of the 
+subroutines in the main:: namespace (symbol table) at runtime.  This will include any 
+imported names from external modules, and is unconnected with those known at conversion time.
+
+Note that the value of $0 inside functions differs between shell versions.  In sh2p
+$0 is retained to be the name of the current run unit (program), which is the POSIX
+behaviour.
+The Bash specific variable FUNCNAME is converted to 'caller(0))[3]'.
+
+There are two different syntax conventions commonly used with functions:
+
+    name () { ... }         # Bourne shell syntax
+    function name { ... }   # Korn shell syntax
+
+Bash and Korn shells support both, however they differ in operation when it comes to variable scope.  
+As an extension to the POSIX (and Bourne) standard, Bash and Korn shells allow local
+variables to be declared using typeset, declare (Bash), or local.  This is mirrored in
+Perl by the 'my' perfix.  Any variables not so declared are globals.
+
+However there are issues with this.  Bourne/POSIX never supported this, so strictly the Bourne
+shell syntax should not support it either.  Both Bash and ksh88 (the most common) do support the
+declaration of local variables in both forms of syntax.  Ksh93 "fixed" it by not supporting it 
+in the Bourne syntax ('typedef var' has no effect), but supporting it in the Korn shell syntax only.
+
+Added to that, very few people know about the capability anyway!
+
+=head2 Variable scope
+
+If the variable is new (top-down parsing) it is declared with 'my', otherwise we assume it is a global.
+The current state of block nesting is tracked, so the definition of a "new" variable is one which
+has not been declared in this, or a higher-level, block.  This can be problematic if a variable is 
+used for the first time in an inner block.
+
+At runtime, the shell checks the environment block for variables before creating its own.
+That behaviour could be converted, but would impose a considerable overhead.  Therefore
+the environment block is not consulted.
 
 =head2 Redirection
 
@@ -80,9 +197,13 @@ are not generated for this.
 
 External and function calls inside a condition are indented
 
+
 expr should be handled
 
+
 back-ticks on rhs are not handled correctly in all cases
+
+String concatination is not always correct
 
 =head2 Shortcomings
 
@@ -90,30 +211,35 @@ Pipelines are problematic, and right now all I do is output some advice
 typedef/declare support is limited
 
 =head3 $?
+
 Currently $? is not traced back to the previous command.
 It is intended to implement a second pass in a future release.
 
 =head3 unset
+
 The assumption is made that the variable is a scalar
 
 =head3 Currently unsupported :
-   Array assignments
-   ${  } notations
-   extended shell pattern matching constructs (Compound::ksh_test)
+
+   Arrays
+   File descriptors (exec, read -u, print -u, some redirection)
+   Co-processes
+   <(...) process substitution (ksh93 & Bash)
    Multiple levels in 'break' and 'continue'
    Nested 'here' documents
    Nested 'case' statements
    Options to the 'export' command
-   tilde ~ expansions
+   Some tilde ~ expansions
+   Redirection from if or loop statments, redirection from functions
 
-=head 3 The following built-ins are currently not converted:
+=head3 The following built-ins are currently not converted:
+
                  alias    
                  bg       
                  bind     
                  builtin  
                  command  
-                 eval     
-                 exec         
+                 eval            
                  false    
                  fc       
                  fg       
@@ -122,8 +248,7 @@ The assumption is made that the variable is a scalar
                  jobs       
                  let      
                  pwd      
-                 readonly   
-                 shift    
+                 readonly     
                  time     
                  times    
                  trap     

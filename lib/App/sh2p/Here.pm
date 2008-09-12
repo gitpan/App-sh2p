@@ -22,6 +22,8 @@ use Scalar::Util qw(refaddr);
 
 use App::sh2p::Utils;
 
+our $VERSION = '0.02';
+
 #################################################################################
 
 my %handle;
