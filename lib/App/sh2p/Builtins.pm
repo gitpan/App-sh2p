@@ -9,9 +9,10 @@ use App::sh2p::Here;
 sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => 0x07);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 my %g_shell_options;
+my %g_file_handles;
 
 ########################################################
 #
@@ -48,6 +49,8 @@ sub general_arg_list {
     my $ntok = 1;
     my $last = '';
     
+    #{local $" = '|';print STDERR "general_arg_list: <@args>\n";}
+    
     # Is final token a comment?
     if (substr($args[-1],0,1) eq '#') {
         $last = pop @args;
@@ -61,15 +64,21 @@ sub general_arg_list {
     for my $arg (@args) {           
         $ntok++;
 
-        if ($arg !~ /^\d+$/) {
-            # Escape embedded quotes
+        # Wrap quotes around it:
+        #    if it is not a digit && it doesn't already have quotes &&
+        #    it isn't a glob constuct
+        if ($arg !~ /^\d+$/ && $arg !~ /^([\'\"]).*\1$/ && $arg !~ /\[|\*|\?/) {
+            # Escape embedded quotes 
             $arg =~ s/\"/\\\"/g;
             #"help syntax highlighter
             $arg = "\"$arg\"";
         }
-    }
-    
-    iout "$cmd (".join(',',@args).")$semi $last";
+    }    
+
+    iout "$cmd (";
+    App::sh2p::Parser::join_parse_tokens (',', @args);
+    out ")$semi $last";
+        
     iout "\n" if query_semi_colon();
     
     return $ntok;
@@ -80,27 +89,22 @@ sub general_arg_list {
 
 sub advise {
 
-    my ($func, @args) = @_;
-    my $ntok = @_;
-    my $last = '';
+    my $func = shift;
         
     my $advise = (App::sh2p::Parser::get_perl_builtin($func))[1];
     
     error_out ("$func should be replaced by something like $advise");
     
-    # Is final token a comment?
-    if (substr($args[-1],0,1) eq '#') {
-        $last = pop @args;
-        $ntok++;
+    my @args;
+    
+    # Pipeline?
+    for my $arg (@_) {
+        last if ($arg eq '|');
+        push @args, $arg if $arg;
+        # print STDERR "advise: <$arg>\n";
     }
     
-    my $semi = '';
-    $semi = ';' if query_semi_colon();
-    
-    iout "$func (".join(',',@args).")$semi $last";
-    iout "\n" if query_semi_colon();
-    
-    return $ntok;
+    return general_arg_list($func, @args);
 }
 
 ########################################################
@@ -115,7 +119,7 @@ sub do_autoload {
         last if $func eq BREAK || $func eq ';' || $first_char eq '#';
 
         if ($first_char eq '$') {
-            # $cmd used - might be called from typedef
+            # $cmd used - this might be called from typedef
             error_out "$cmd '$func' ignored";
         }
         else {
@@ -137,6 +141,10 @@ sub do_break {
    
    iout 'last';
    
+   if (query_semi_colon()) {
+       out ";\n";
+   }
+
    if (defined $level && $level =~ /^\d+$/) {
       error_out "Multiple levels in 'break $level' not supported";
       $ntok++;
@@ -171,6 +179,10 @@ sub do_continue {
    
    iout 'next';
    
+   if (query_semi_colon()) {
+       out ";\n";
+   }
+
    if (defined $level && $level =~ /^\d+$/) {
       error_out "Multiple levels in 'continue $level' not supported";
       $ntok++;
@@ -180,30 +192,133 @@ sub do_continue {
 }
 
 ########################################################
-
+# 0.04 - removed quote handling
 sub do_cd {
 
-   my (undef, @rest) = @_;
+   my (undef, @args) = @_;
    my $ntok = 1;
+   my $comment = "\n";
    
-   iout 'chdir ';
+   pop @args if !$args[-1];
+   
+   iout 'chdir (';
+           
+   for (my $i=0; $i < @args; $i++) {
+                   
+       $ntok++;
+   	        
+       if (substr ($args[$i],0,1) eq '#') {
+           my @comment = splice (@args,$i);
+           $comment = "@comment";
+   	            
+           # remove trailing comment from previous item
+           $args[$i-1] =~ s/\.$// if $i > 0;
+           last
+       }
+   
+       # Wrap quotes around it:
+       if ($args[$i] !~ /^\d+$/    &&     # if it is not a digit 
+           $args[$i] !~ /^\".*\"$/ &&     # it doesn't already have quotes 
+           $args[$i] !~ /\[|\*|\?/) {     # it isn't a glob constuct
+           # Escape embedded quotes
+           $args[$i] =~ s/\"/\\\"/g;
+           #"help syntax highlighter
+           $args[$i] = "\"$args[$i]\"";
+       }
+       
+       $args[$i] .= '.' if $i < $#args;
+   } 
+   
+   $ntok += App::sh2p::Parser::join_parse_tokens ('.', @args);
+   
+   out ')';
 
-   $ntok += App::sh2p::Parser::join_parse_tokens ('.', @rest);
-   
-   out ";\n";
-   
+   if (query_semi_colon()) {
+       out "; $comment";
+   }
+
    return $ntok;
 }
 
 ########################################################
-# also used by chown
+# TODO: comma separated groups
+sub chmod_text_permissions {
+
+   my ($in, $file) = @_;
+   
+   iout "# chmod $in $file\n";
+   my $stat = "{ my \$perm = (stat \"$file\")[2] & 07777;\n";
+   
+   # numbers are base 10: I'm constructing a string, not an octal int
+   my %classes = ( u => 100, g => 10, o => 1);
+   my %access  = ( x => 1, w => 2, r => 4);
+   
+   # Linux man page                      [ugoa]*([-+=]([rwxXst]*|[ugo]))+
+   my ($class, $op, $access) = $in =~ /^([ugoa]*)([-=+])([rwx]+)?$/;
+   
+   my $mask  = 0;
+   my $perms = 0;
+   
+   $class = 'ugo' if $class eq 'a' or !$class;
+   $access = 0 if !$access;
+
+   for (split('', $access)) {$mask  += $access{$_}}
+   for (split('', $class))  {$perms += $mask * $classes{$_}}
+    
+   $perms = sprintf ("0%03d", $perms);
+ 
+   iout "$stat  ";
+
+   if ($op eq '=') {
+       my $mask = 0; 
+       for (split('', $class))  {$mask += 7 * $classes{$_}}
+       $mask = sprintf ("0%03d", $mask);
+
+       out "\$perm &= ~0$mask;";
+       out "chmod(\$perm,\"$file\");chmod(\$perm|$perms"
+   }
+   elsif ($op eq '+') {
+       out "chmod (\$perm | $perms";
+   }
+   else {
+       out "chmod (\$perm & ~$perms";
+   }
+
+   out ", \"$file\")}\n";     
+}
+
+########################################################
+# also used by umask
 sub do_chmod {
     
-    my ($cmd, $perms, @args) = @_;
-    my $ntok = 1;
-    #my @args = split /\s+/, $args;
-    my $comment = '';
+    my ($cmd) = shift;
+    my ($opt) = shift;
+    my $perms;
+    my $ntok = 2;
+
+    if (substr($opt,0,1) eq '-') {
+       error_out ("$cmd options not yet supported");
+       $perms = shift;
+       $ntok++;
+    }
+    else {
+       $perms = $opt;
+       $opt = '';
+    }
     
+    my @args = @_;
+
+    my $comment = '';
+    my $text = '';
+    
+    if ( $perms !~ /^\d+$/ ) {
+       for my $file (@args) {
+           chmod_text_permissions ($perms, $file);
+           $ntok++;
+       }
+       return $ntok;
+    }
+
     iout "$cmd ";
     
     if (defined $perms) {
@@ -212,11 +327,14 @@ sub do_chmod {
         if ($cmd eq 'chmod') {
             out "0$perms,";
         }
+        elsif ($cmd eq 'umask') {
+            out "0$perms";
+        }
         else {
             out "$perms,";
         }
         
-        if (@args) {
+        if (@args && $cmd ne 'umask') {
         
             for (my $i=0; $i < @args; $i++) {
                 
@@ -248,22 +366,91 @@ sub do_chmod {
 
 ########################################################
 
+sub do_chown {
+    
+    my ($cmd) = shift;
+    my ($opt) = shift;
+    my $ugrp;
+    my $ntok = 2;
+
+    if (substr($opt,0,1) eq '-') {
+       error_out ("$cmd options not yet supported");
+       $ugrp = shift;
+       $ntok++;
+    }
+    else {
+       $ugrp = $opt;
+       $opt = '';
+    }
+    
+    my @args = @_;
+
+    my $comment = '';
+    my $text = '';
+    
+    if (defined $ugrp) {
+        $ntok++;   
+        if ($cmd eq 'chown') {
+            iout "{my(\$uid,\$gid)=(getpwnam(\"$ugrp\"))[2,3];";
+        }
+        else { # chgrp
+            iout "{my (\$name,undef,\$gid)=getgrname(\"$ugrp\");\n";
+            out  " my \$uid=(getpwnam(\$name))[2];\n ";
+        }
+        out "chown \$uid, \$gid,";   # There is no chgrp
+    }
+    else {
+        error_out ("No user/group supplied for $cmd");
+        iout $cmd;
+    }
+        
+    if (@args) {
+        
+       for (my $i=0; $i < @args; $i++) {
+                
+           $ntok++;
+	        
+           if (substr ($args[$i],0,1) eq '#') {
+               my @comment = splice (@args,$i);
+               $comment = "@comment";
+	            
+               # remove trailing comment from previous item
+               $args[$i-1] =~ s/,$// if $i > 0;
+               last
+           }
+	        
+           # Escape embedded quotes
+           $args[$i] =~ s/\"/\\\"/g;
+           #"help syntax highlighter
+           $args[$i] = "\"$args[$i]\"";
+           $args[$i] .= ',' if $i < $#args;
+       } 
+	          
+       App::sh2p::Handlers::interpolation ("@args");
+
+    }
+    out "}; $comment\n";
+    
+    return $ntok;
+}
+
+########################################################
+ 
 sub do_exec {
 
    my (undef, @rest) = @_;
    my $ntok = 1;
    
    if ($rest[0] =~ /^\d$/) {
-       error_out ("File descriptors are not supported");
-       $ntok = @_;
-       out "@_;\n";
+       error_out ("Warning: file descriptors are not supported");
+       my ($fd, $access, $filename) = @rest;
+       iout "open(my \$sh2p_handle$fd, '$access', \"$filename\") or ".
+            "die \"Unable to open $filename: \$!\";\n";
+       $ntok += 3;
+       $g_file_handles{$fd} = $filename;
    }
    else {
-       iout 'exec (';
-
-       $ntok += App::sh2p::Parser::join_parse_tokens (',', @rest);
-   
-       out ");\n";
+       $ntok = general_arg_list('exec', @rest);
    }
    
    return $ntok;
@@ -383,6 +570,38 @@ sub do_kill {
 }
 
 ########################################################
+
+sub do_let {
+
+    my ($cmd, @rest) = @_;
+    my $ntok = 1;
+    
+    # Find any comment - this should go first
+    if (substr($rest[-1],0,1) eq '#') {
+        $ntok++;
+        iout $rest[-1];      # Write the comment out
+        pop @rest
+    }
+    
+    for my $token (@rest) {
+        # strip quotes
+	$token =~ s/[\'\"]//g;
+
+        # Get variable name
+        $token =~ /^(.*?)=/;
+        my $var = $1;
+        if (Register_variable($var, int)) {
+            iout "my $var;\n";
+        }
+        
+        App::sh2p::Compound::arith ($token);
+        $ntok++;
+    }
+    
+    return $ntok;
+}
+
+########################################################
 # Also does for echo
 sub do_print {
 
@@ -409,14 +628,13 @@ sub do_print {
    for my $arg (@args) {
        last if $arg eq BREAK || $arg eq ';';
        
-       my $quotes = 0;
        # This is so a > inside a string is not seen as redirection
        if ($arg =~ /^([\"\']).*?\1/) {
-           $quotes = 1;
+           set_in_quotes();
        }
        
        # This should also strip out the redirection
-       if (!$quotes && $arg =~ s/(\>{1,2})//) {
+       if (!query_in_quotes() && $arg =~ s/(\>{1,2})//) {
            $redirection = $1;     
        }
        
@@ -425,6 +643,7 @@ sub do_print {
            $file = $1;
        }
        
+       unset_in_quotes();
        push @ARGV, $arg if $arg;
        $ntok++;
    }
@@ -460,18 +679,68 @@ sub do_print {
    
    iout ("print $handle");
    
-   App::sh2p::Parser::join_parse_tokens (',', @ARGV);
-      
-   if ($newline) {
-      out ",\"\\n\";\n"
-   }
-   else {
-      out ";\n";
-   }
-   
-   App::sh2p::Handlers::Handle_close_redirection() if $redirection;
+    my @args = @ARGV;
+    
+    # Is final token a comment?    
+    pop @args if substr($args[-1],0,1) eq '#';
 
-   return $ntok;
+    $ntok += @args;
+    my $string = '';
+    
+    # C style for loop because I need to check the position
+    for (my $i = 0; $i < @args; $i++) {
+   
+        # Strip out existing quotes
+        #$args[$i] =~ s/^([\"\'])(.*)\1(.*)$/$2$3/;
+        if ($args[$i] =~ s/^([\"])(.*)\1(.*)$/$2$3/) {
+            set_in_quotes();
+        }
+        
+        my @tokens = ($args[$i]);
+        my @types  = App::sh2p::Parser::identify (2, @tokens);
+
+        #print_types_tokens(\@types, \@tokens);
+        
+        if ($types[0][0] eq 'UNKNOWN' || $types[0][0] eq 'SINGLE_DELIMITER') {
+        
+            $string .= "$tokens[0]";
+            
+            # append with a space for print/echo
+            $string .= ' ' if $i < $#args; 
+        }
+        else {
+        
+            if ($string) {
+                App::sh2p::Handlers::interpolation ($string);   
+                $string = ' ';  # Add a space between args
+                out ',';
+            }
+        
+            App::sh2p::Parser::convert (@tokens, @types); 
+            out ',' if $i < $#args; 
+        }
+        #unset_in_quotes();     commented out in 0.04
+    }
+       
+    if ($string && $string ne ' ') {
+       if ($newline) {
+          $string .= "\\n"
+       }
+
+       App::sh2p::Handlers::interpolation ($string);
+    }
+    elsif ($newline) {
+       out ",\"\\n\""
+    }
+       
+    out ";\n";
+    
+    # An ugly hack, but necessary where the first arg is parenthesised
+    fix_print_arg();
+    
+    App::sh2p::Handlers::Handle_close_redirection() if $redirection;
+
+    return $ntok;
 }
 
 ########################################################
@@ -493,12 +762,13 @@ sub do_read {
       $ntok++;
    }
    
-   getopts ('p:rsunAa', \%args);
+   getopts ('p:rsu:nAa', \%args);
    
-   if (exists $args{p}) {               # Bash syntax
-      $prompt = $args{p}
+   if (exists $args{p} && which_shell() eq 'bash') { 
+       # Bash syntax for prompt
+       $prompt = $args{p}
    }
-   elsif ($ARGV[0] =~ /^(\w*)\?(.*)$/) {   # ksh syntax
+   elsif ($ARGV[0] =~ /^(\w*)\?(.*)$/) {   # ksh syntax for prompt
        
       $ARGV[0] = $1 || 'REPLY';    
       $prompt  = $2;
@@ -521,18 +791,35 @@ sub do_read {
        }
    }
    
+   if (exists $args{p} && which_shell() eq 'ksh') { 
+       # ksh syntax for pipes
+       error_out "read through ksh pipes is not supported";
+       iout "read @_;\n";
+       return $ntok;
+   }
+   
    my $heredoc = App::sh2p::Here::get_last_here_doc();
    
    if (defined $heredoc) {
-      out "sh2p_read_from_here ('$heredoc', ".
-             get_special_var('IFS').", $prompt, ".
+      iout "sh2p_read_from_here ('$heredoc', \"IFS\",0), $prompt, ". 
              '\\'.(join ',\\', @ARGV).")";
-   
+      App::sh2p::Here::store_sh2p_here_subs();
    } 
    else {
-      out "sh2p_read_from_stdin (".
-             get_special_var('IFS').", $prompt,\n".
-             '\\'.(join ',\\', @ARGV).");";
+      if (exists $args{u} && $args{u} ne 0) {
+          my $fd = $args{u};
+         
+          iout "$ARGV[0] = <\$sh_handle$fd>";
+     
+          if (@ARGV > 1) {
+             iout "(".(join ',', @ARGV).") = split /\$IFS/, $ARGV[0];"
+          }
+      }
+      else {
+          iout "sh2p_read_from_stdin (\"\$IFS\", $prompt, ".
+                 '\\'.(join ',\\', @ARGV).")";
+          App::sh2p::Here::store_sh2p_here_subs();
+      }
    }
    
    return $ntok;
@@ -559,7 +846,7 @@ sub do_return {
       $ntok++;
    }
 
-   out ";";
+   out ";\n";
    return $ntok;
 }
 
@@ -577,7 +864,7 @@ sub do_shift {
       $level = 1;
    }
 
-   iout ('shift;' x $level);
+   iout (('shift;' x $level)."\n");     # 0.04
    
    return $ntok;
 
@@ -630,6 +917,91 @@ sub do_source {
    out '";';
    
    return $ntok;
+}
+
+########################################################
+
+sub do_touch {
+    my    $ntok = @_;
+    my    $cmd  = shift;
+    local @ARGV = @_;
+
+    my %args;
+    getopts ('acdfmr:t', \%args);
+    if (keys %args) {
+        error_out "$cmd options not currently supported";
+    }
+
+    my $text = "# $cmd @_\n";
+    
+    for my $file (@ARGV) {
+        if (substr ($file,0,1) eq '#') {
+            iout "$file\n";     # Output comment first         
+        }
+        
+$text .= << "END"
+    if (-e \"$file\") {
+        # update access and modification times, requires perl 5.8
+        utime undef, undef, \"$file\";
+    }
+    else {
+        open(my \$fh,'>',\"$file\") or warn \"$file:\$!\";
+    }
+
+END
+    }
+
+    iout $text;
+
+    return $ntok;
+}
+
+########################################################
+
+sub do_tr {
+
+    my ($cmd, @args) = @_;
+    my $ntok = 1;
+    my %args;
+    
+    local @ARGV = @args;
+    getopts ('cCsd', \%args);
+    if (keys %args) {
+        error_out "$cmd options not currently supported";
+    }
+    
+    $ntok = @_ - @ARGV;
+    
+    return $ntok if !@ARGV;
+    
+    my $from = shift @ARGV;
+    $ntok++;
+    
+    my $to;
+    if (@ARGV) {
+        $to = shift @ARGV;
+        $ntok++;
+    }
+    
+    # Strip quotes if there are any
+    $from =~ s/^\'(.*)\'/$1/g;
+    $to   =~ s/^\'(.*)\'/$1/g;
+    
+    # common case
+    if (($from eq '[a-z]' || $from eq '[:lower:]') && 
+        ($to   eq '[A-Z]' || $to   eq '[:upper:]')) {
+        iout 'uc ';    
+    }
+    elsif (($from eq '[A-Z]' || $from eq '[:upper:]') && 
+           ($to   eq '[a-z]' || $to   eq '[:lower:]')) {
+        iout 'lc ';
+    }
+    else {
+        # Convert patterns TODO
+        iout "tr/$from/$to/";
+    }
+    
+    return $ntok;
 }
 
 ########################################################
@@ -749,17 +1121,59 @@ sub initialise_array {
 
 # set +A
 sub overwrite_array {
-      my ($nu, $array, @values) = @_;
+    my ($nu, $array, @values) = @_;
       
-      # Fix for 5.6 01/09/2008
-      iout "my \@${array}\[0..". $#values ."\] = qw(@values);\n";
+    # Fix for 5.6 01/09/2008
+    iout "my \@${array}\[0..". $#values ."\] = qw(@values);\n";
+}
+
+########################################################
+
+sub do_true {
+
+    my ($name, $rest) = @_;
+    my $ntok = 1;
+    
+    if (App::sh2p::Compound::get_context()) {
+        # Inside a conditional
+        out ' 1 ';
+    }
+    else {
+        iout '$? = 0;';
+
+        if (!defined $rest) {
+            out "\n";
+        }
+    }
+    
+    return 1;
+}
+
+sub do_false {
+
+    my ($name, $rest) = @_;
+    my $ntok = 1;
+    
+    if (App::sh2p::Compound::get_context()) {
+        # Inside a conditional
+        out ' 0 ';
+    }
+    else {
+        iout '$? = 1;';
+    
+        if (!defined $rest) {
+            out "\n";
+        }
+    }
+
+    return 1;
 }
 
 ########################################################
 
 sub do_unset {
    
-   my ($undef, $var, @rest) = @_;
+   my (undef, $var, @rest) = @_;
    my $ntok = 1;
    
    if (substr($var,0,1) eq '-') {
@@ -785,7 +1199,7 @@ sub do_unset {
    
       my $type = '$';
       
-      if (get_special_var($var)) {
+      if (get_special_var($var,0)) {
           set_special_var(undef);
       }
       else {

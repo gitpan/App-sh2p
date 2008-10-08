@@ -22,7 +22,7 @@ use Scalar::Util qw(refaddr);
 
 use App::sh2p::Utils;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 #################################################################################
 
@@ -31,6 +31,13 @@ my %name;
 my %access;
 
 my $g_last_opened_name;
+my $g_write_subroutines = 0;
+
+#################################################################################
+
+sub store_sh2p_here_subs {
+    $g_write_subroutines = 1;
+}
 
 #################################################################################
 
@@ -73,6 +80,8 @@ sub open {
    error_out ("Writing $dir/$name.here");
    open ($handle{$key}, $access{$key}, "$dir/$name.here") ||
         carp "Unable to open $dir/$name.here: $!\n";
+   
+   $g_write_subroutines = 1;
    
    return $this 
 }
@@ -125,4 +134,102 @@ sub DESTROY {
 }
 
 #################################################################################
+
+sub write_here_subs {
+
+    if ($g_write_subroutines) {
+    
+        $g_write_subroutines = 0;
+        
+        out "";
+        
+        out << 'END';
+        
+
+######################################################
+# sh2p_read_from_handle
+# Arguments:
+#       1. Handle
+#	2. Value of $IFS
+#	3. Prompt string
+#	4. List of scalar references
+#	Any may be undef
+	
+sub sh2p_read_from_handle {
+
+   my ($handle, $IFS, $prompt, @refs) = @_;
+   
+   if (!defined $IFS) {
+      $IFS = " \t\n";
+   }
+   
+   if (defined $prompt) {
+      print $prompt
+   }
+   
+   my $line = <$handle>;
+   my $REPLY;
+   
+   chomp $line;
+   
+   my (@vars) = split /[$IFS]+/, $line;
+   my $i;
+   
+   # Assign values to variables
+   for ($i = 0; $i < @refs; $i++) {
+      if ($i > $#vars) {
+         ${$refs[$i]} = '';
+      }
+      else {
+         ${$refs[$i]} = $vars[$i];
+      }
+   }
+   
+   # If not enough variables supplied
+   if ($i < $#vars || !@refs) {
+      my $IFS1st = substr($IFS,0,1);
+      $REPLY = join $IFS1st, @vars[$i..$#vars];
+   }
+
+   if (@refs > 0 && defined $REPLY) {
+      # Concat extra values onto the element
+      ${$refs[-1]} .= " $REPLY";
+      $REPLY = ''
+   }
+   
+   return $REPLY
+}
+
+######################################################
+
+sub sh2p_read_from_stdin {
+
+   my (@args) = @_;
+   
+   return sh2p_read_from_handle (*STDIN, @args);
+}
+
+######################################################
+
+sub sh2p_read_from_here {
+
+   my ($filename, @args) = @_;
+
+   open (my $handle, '<', $filename) or 
+         die "Unable to open $filename: $!";
+   
+   return sh2p_read_from_handle ($handle, @args);
+}
+
+######################################################
+#  End of subroutines added by sh2p
+######################################################
+END
+# End of here document
+
+    }
+}
+
+#################################################################################
 1;
+

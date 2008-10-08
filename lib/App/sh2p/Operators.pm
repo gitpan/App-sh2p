@@ -7,8 +7,11 @@ use App::sh2p::Utils;
 sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => 0x07);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 my $g_specials = '\[|\*|\?';
+my %g_perl_ops;
+
+@g_perl_ops{qw( eq ne lt gt le ge )} = undef;
    
 ######################################################
 
@@ -21,11 +24,11 @@ sub no_change {
 }
 
 ######################################################
-
+# Altered for changed tokenising 0.04
 sub shortcut {
-   my ($input) = @_;
-   
-   my $op;
+   my ($input, @rest) = @_;
+   my $ntok = @_;
+   my $op;  
    
    # operators are followed by whitespace
    if ($input =~ s/(.+?)\s+//)  { 
@@ -35,33 +38,58 @@ sub shortcut {
        $op = $input;
        $input = '';     # Avoid recursion
    }
-   
+
    out "$op ";
    
-   if ($input) {
-       my @tokens = ($input);
-       my @types  = App::sh2p::Parser::identify (1, @tokens); 
-                                                       
-       App::sh2p::Parser::convert (@tokens, @types);
+   return $ntok if !@rest;
+   
+   my @types;
+   
+   if (@rest >= 3) {
+       # string op string
+       @types  = App::sh2p::Parser::identify (1, @rest);
+       
+       #print_types_tokens (\@types,\@rest);
+       
+       # Token may already have been converted
+       if ($types[1][0] eq 'UNKNOWN' && exists $g_perl_ops{$rest[1]}) {
+           $types[1] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+       }
+       elsif ($types[1][0] ne 'OPERATOR') {
+           @types  = App::sh2p::Parser::identify (0, @rest); 
+       }
+   }
+   else {
+       @types  = App::sh2p::Parser::identify (0, @rest); 
    }
    
-   return 1;
+   App::sh2p::Parser::convert (@rest, @types);
+
+   return $ntok;
 }
 
 ######################################################
 
 sub boolean {
 
-   my ($op) = @_;
+   my ($op, @rest) = @_;
    my $ntok = 1;
    
-   if (substr($op,0,1) eq '-' && length($op) eq 2) {
-       out "$op ";
-   }
-   else {
-       out " $op ";
-   }
+   #print STDERR "boolean: <$op> <@rest>\n";
    
+   if (substr($op,0,1) eq '-' && length($op) eq 2) {
+       out "$op (";
+       
+       if (@rest) {
+          $ntok = @_;
+          App::sh2p::Handlers::interpolation ("@rest");
+       }
+       out ")";
+   }
+   elsif ($op) {  # $op might be an empty string (ignore)
+       out " $op ";
+   }   
+
    return $ntok;
 }
 

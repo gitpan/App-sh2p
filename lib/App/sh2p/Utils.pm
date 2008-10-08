@@ -2,12 +2,11 @@ package App::sh2p::Utils;
 
 use warnings;
 use strict;
-use Data::Dumper;   # for debug purposes
 
 sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => 0x07);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 require Exporter;
 our (@ISA, @EXPORT);
@@ -18,10 +17,14 @@ our (@ISA, @EXPORT);
               iout               out                error_out    flush_out
               get_special_var    set_special_var    can_var_interpolate
               mark_function      unmark_function    ina_function
+              mark_subshell      unmark_subshell    ina_subshell
               inc_block_level    dec_block_level    get_block_level
               is_user_function   set_user_function  unset_user_function
-              dec_indent         inc_indent 
+              dec_indent         inc_indent         
+              rem_empty_string   fix_print_arg
               no_semi_colon      reset_semi_colon   query_semi_colon
+              set_in_quotes      unset_in_quotes    query_in_quotes
+              set_shell          which_shell
               open_out_file      close_out_file);
 
 ############################################################################
@@ -33,7 +36,7 @@ my %g_special_vars = (
       'ERRNO'    => '$!',
       'HOME'     => '$ENV{HOME}',
       'PATH'     => '$ENV{PATH}',
-      'FUNCNAME' => 'caller(0))[3]',
+      'FUNCNAME' => '(caller(0))[3]',    # Corrected 0.04
       '?'        => '($? >> 8)',
       '#'        => 'scalar(@ARGV)',
       '@'        => '@ARGV',
@@ -54,9 +57,12 @@ my %g_user_functions;
 my $g_new_line       = 1;
 my $g_use_semi_colon = 1;
 my $g_ina_function   = 0;
+my $g_ina_subshell   = 0;
 my $g_block_level    = 0;
 my $g_indent         = 0;
 my $g_errors         = 0;
+my $g_is_in_quotes   = 0;
+my $g_shell_in_use   = "ksh";
 
 my $g_outh;
 my $g_filename;
@@ -65,13 +71,13 @@ my $g_err_buffer;
 
 #  For use by App::sh2p only
 ############################################################################
-
+# Called by Handlers::interpolate
 sub can_var_interpolate {
 
    my ($name) = @_;
    my $retn;
    
-   $retn = get_special_var ($name);
+   $retn = get_special_var ($name, 1);
    
    if (defined $retn && $retn !~ /^[\$\@]/) {
        return 0
@@ -80,14 +86,29 @@ sub can_var_interpolate {
        return 1
    }
 }
+########################################################
+# This is primarily for [@] and [*].  Also to prevent globbing inside ""
+sub query_in_quotes {
+    return $g_is_in_quotes;
+}
+
+sub set_in_quotes {
+    $g_is_in_quotes = 1;
+}
+
+sub unset_in_quotes {
+    $g_is_in_quotes = 0;
+}
 
 ############################################################################
 
 sub get_special_var {
-   my ($name) = @_;
+   my ($name, $no_errors) = @_;
    my $retn;
    
    return undef if ! defined $name;
+
+   $no_errors = 0 if ! defined $no_errors;
 
    # Remove dollar prefix
    $name =~ s/^\$//;
@@ -100,7 +121,10 @@ sub get_special_var {
        $retn = "\$ARGV[$offset]";
    }
    elsif ($name eq 'PWD') {
-       error_out ("Using \$PWD is unsafe: use Cwd::getcwd");
+       
+       if (!$no_errors) {
+           error_out ("Using \$PWD is unsafe: use Cwd::getcwd");
+       }
        $retn = '$ENV{PWD}';
    }
    else {
@@ -119,6 +143,7 @@ sub get_special_var {
 
 sub set_special_var {
    my ($name, $value) = @_;
+   
    $g_special_vars{$name} = $value;
    
    return $value;
@@ -136,6 +161,18 @@ sub reset_semi_colon() {
 
 sub query_semi_colon() {
     return $g_use_semi_colon;
+}
+
+############################################################################
+
+sub set_shell {
+    my $shell = shift;
+    $g_shell_in_use = $shell;
+    #print STDERR "Shell set to <$shell>\n";
+}
+
+sub which_shell {
+    return $g_shell_in_use;
 }
 
 #################################################################################
@@ -156,6 +193,33 @@ sub ina_function {
     return $g_ina_function;
 }
 
+#################################################################################
+
+sub mark_subshell {
+    $g_ina_subshell++;
+}
+
+sub unmark_subshell {
+
+    # Delete all the variables for this subshell
+    
+    while (my($key, $value) = each %g_variables) {
+          if ($value->[2] == $g_ina_subshell) {
+              delete $g_variables{$key};
+          }
+    }
+
+    $g_ina_subshell--;
+    
+    if ($g_ina_subshell < 0) {
+        print STDERR "++++ Internal Error, subshell count = $g_ina_subshell\n";
+    }
+}
+
+sub ina_subshell {
+    return $g_ina_subshell;
+}
+
 ############################################################################
 # Return TRUE if NOT already registered
 sub Register_variable {
@@ -167,16 +231,17 @@ sub Register_variable {
         $type = '$'
     }
     
-    #print STDERR "Register_variable: <$name> <$type> <$level>\n";
+    #print STDERR "Register_variable: <$name> <$type> <$level> <$subshell>\n";
     
     if (exists $g_variables{$name}) {
     
-       if ($g_variables{$name}->[0] <= $level) {
+       if ($g_variables{$name}->[0] <= $level && 
+           $g_variables{$name}->[2] == $g_ina_subshell) { 
            return 0
        }
        else {
            # Create the variable with the block level and type	          
-           $g_variables{$name} = [$level, $type];
+           $g_variables{$name} = [$level, $type, $g_ina_subshell];
            return 1
        }
     }
@@ -188,7 +253,7 @@ sub Register_variable {
     else {
        # Create the variable with a block level and type
        
-       $g_variables{$name} = [$level, $type];
+       $g_variables{$name} = [$level, $type, $g_ina_subshell];
        return 1
     } 
 }
@@ -347,10 +412,36 @@ sub out {
    local $" = '';
    my $line = "@_";
    
+   #my @caller = caller();
+   #print STDERR "out: <$line> @caller\n";
+   
    $g_out_buffer .= $line;
       
    $g_new_line = 0;
    
+}
+
+################################################################################
+# I don't like these hacks, but any other way is convoluted
+sub fix_print_arg {
+    # This avoids 'print (...) interpreted as function'
+    #print STDERR "rem_empty_string: <$g_out_buffer>\n";
+    
+    if ($g_out_buffer =~ /print/) {
+        $g_out_buffer =~ s/(^|[^\'\"]+)(print\s+)\(/$2\"\",(/;    
+    }
+}
+
+sub rem_empty_string {
+    
+    return if $g_out_buffer =~ /print/;   # Often required
+
+    # Remove "". at start of calls
+    $g_out_buffer =~ s/\(\"\"\./(/;
+    
+    # Remove "". in assignments
+    $g_out_buffer =~ s/= \"\"\./= /;
+    
 }
 
 ################################################################################
@@ -399,9 +490,12 @@ sub reset_globals {
     $g_new_line       = 1;
     $g_use_semi_colon = 1;
     $g_ina_function   = 0;
+    $g_ina_subshell   = 0;
     $g_block_level    = 0;
     $g_indent         = 0;
     $g_errors         = 0;
+    $g_is_in_quotes   = 0;
+    $g_shell_in_use   = "ksh";
     
 }
 
@@ -410,10 +504,11 @@ sub reset_globals {
 sub print_types_tokens {
     
     my ($types, $tokens) = @_;
+    my $caller = (caller(1))[3];
     
     for (my $i = 0; $i < @$types; $i++) {
     
-        print STDERR "Type: ".$types->[$i][0].", ";
+        print STDERR "$caller Type: ".$types->[$i][0].", ";
         
         print STDERR "Token: ".$tokens->[$i]."\n";
     }

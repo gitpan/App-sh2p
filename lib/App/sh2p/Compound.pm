@@ -8,7 +8,7 @@ use App::sh2p::Handlers;
 sub App::sh2p::Parser::convert (\@\@);
 use constant (BREAK => 0x07);
 
-our $VERSION = '0.02';
+our $VERSION = '0.04';
 
 my $g_not = 0;
 my $g_context = '';
@@ -53,15 +53,15 @@ sub arith {
 
    my ($statement, @rest) = @_;  
    
-   # First 2 chars passed should be (( or $((
+   # First 2 chars passed should be (( or $((, unless from let
    $statement =~ s/^\$?\(\(//;
-   # Last 2 chars passed should be ))
+   # Last 2 chars passed should be )), unless from let
    $statement =~ s/\)\)$//;
    
    my $out = '( ';
    my @tokens = App::sh2p::Parser::tokenise ($statement);
 
-   my $pattern = '==|>=|<=|\/=|%=|\+=|-=|\*=|=|>|<|!=|\+\+|\+|--|-|\*|\/|%';
+   my $pattern = '<<|>>|==|>=|<=|\/=|%=|\+=|-=|\*=|=|>|<|!=|\+\+|\+|--|-|\*|\/|%';
 
    for my $token (@tokens) {  
       # Further tokenise
@@ -74,8 +74,8 @@ sub arith {
               # Must be a variable!
               $subtok = "\$$subtok";
           }
-          elsif ($subtok =~ /\$[A-Z0-9#{}\[\]]+/i) {
-              my $special = get_special_var($subtok); 
+          elsif ($subtok =~ /\$[A-Z0-9\?#\{\}\[\]]+/i) {
+              my $special = get_special_var($subtok,0); 
               $subtok = $special if (defined $special);
           }
           
@@ -85,13 +85,36 @@ sub arith {
    }
   
    if (query_semi_colon()) {
-       out "$out );\n";
+       out "$out);\n";
    }
    else {
-       out "$out )";
+       out "$out)";
    }
    return 1;
 }
+
+#####################################################
+# identify_ksh_boolean ($tokens[$i], $types[$i])
+
+sub identify_ksh_boolean (\$\$){
+
+    my ($rtok, $rtype) = @_;
+    my $retn = 1;
+    
+    if (exists $convert{$$rtok}) {   # ksh options
+       $$rtok  = $convert{$$rtok};
+       $$rtype = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+    } 
+    elsif (substr($$rtok,0,1) eq '-') {
+        $$rtype = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+    }
+    else {
+        $retn = 0;
+    }
+
+    return $retn;
+    
+}  # identify_ksh_boolean
 
 #####################################################
 # [[
@@ -109,7 +132,6 @@ sub ksh_test {
    
    # extglob
    my $specials = '\@|\+|\?|\*|\!';
-   my @joined;
    
    my @tokens = App::sh2p::Parser::tokenise ($statement);
    my @types  = App::sh2p::Parser::identify (1, @tokens);
@@ -119,25 +141,18 @@ sub ksh_test {
       my $token = $tokens[$i];
       
       #print STDERR "ksh_test token: <$token>\n";
-   
-      if (exists $convert{$token}) {
-         $tokens[$i] = $convert{$token};
-         $types[$i] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
-         
-         if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
-             @joined = splice (@tokens, $i+1);
-             splice (@types, $i+1);
-             $i = $#tokens;    # last
-         }
-      } 
-      elsif (substr($token,0,1) eq '-') {
-         $types[$i] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
-         
-         if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
-             @joined = splice (@tokens, $i+1);
-             splice (@types, $i+1);
-             $i = $#tokens;    # last
-         }
+      if (identify_ksh_boolean ($tokens[$i], $types[$i])) {
+      
+          if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
+              
+              $i++;
+              while(!identify_ksh_boolean ($tokens[$i], $types[$i]) &&
+                    $i < $#tokens) {
+                  
+                  $i++;
+              }
+              
+          }
       }
       else {
       
@@ -187,24 +202,47 @@ sub ksh_test {
    }
    
    # Operators & stuff
+   #print_types_tokens (\@types, \@tokens);
    App::sh2p::Parser::convert (@tokens, @types);
-      
-   if (@joined) {     
-       App::sh2p::Parser::join_parse_tokens ('.', @joined);
-   }
-   
+         
    out ' ) ';
    
    # We haven't finished yet!
    if ($rest) {
-       $rest =~ s/^\s+//;     # Remove leading whitespace
-       my @tokens = ($rest);
+       my @tokens = App::sh2p::Parser::tokenise ($rest);
        my @types  = App::sh2p::Parser::identify (2, @tokens);          
        App::sh2p::Parser::convert (@tokens, @types);          
    }
    
    return  1;
 }
+
+#####################################################
+# identify_sh_boolean ($tokens[$i], $types[$i])
+
+sub identify_sh_boolean (\$\$){
+
+    my ($rtok, $rtype) = @_;
+    my $retn = 1;
+    
+    if (exists $sh_convert{$$rtok}) {
+       $$rtok  = $sh_convert{$$rtok};        
+       $$rtype = [('OPERATOR', \&App::sh2p::Operators::boolean)];         
+    }       
+    elsif (exists $convert{$$rtok}) {   # ksh options
+       $$rtok  = $convert{$$rtok};
+       $$rtype = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+    } 
+    elsif (substr($$rtok,0,1) eq '-') {
+        $$rtype = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+    }
+    else {
+        $retn = 0;
+    }
+
+    return $retn;
+    
+}  # identify_sh_boolean
 
 #####################################################
 # Not strictly a compound statement, but near enough
@@ -216,10 +254,10 @@ sub sh_test {
    
    # First char/s passed should be [ or test
    $statement =~ s/^\[|^test//;
-   
-   if (@rest) {
-      my $i;
       
+   if (@rest) {
+      
+      my $i;
       for ($i = 0; $i < @rest; $i++) {
           
           last if $rest[$i] eq BREAK || $rest[$i] eq ';';
@@ -237,33 +275,34 @@ sub sh_test {
    
    # glob
    my $specials = '\[|\*|\?';
-   
+      
    my @tokens = App::sh2p::Parser::tokenise ($statement);
    my @types  = App::sh2p::Parser::identify (1, @tokens);
       
    my $index = 0;
-   for my $token (@tokens) {
+   for (my $i = 0; $i < @tokens; $i++) {
       
-      if (exists $sh_convert{$token}) {
-         $token = $sh_convert{$token};
-         $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
-      }       
-      elsif (exists $convert{$token}) {   # ksh options
-         $token = $convert{$token};
-         $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
-      } 
-      elsif (substr($token,0,1) eq '-') {
-          $types[$index] = [('OPERATOR', \&App::sh2p::Operators::boolean)];
+      if (identify_sh_boolean ($tokens[$i], $types[$i])) {
+      
+          if ( $i < $#tokens && $tokens[$i+1] !~ /^($specials)\(/ ) {
+              
+              $i++;
+              while(!identify_sh_boolean ($tokens[$i], $types[$i]) &&
+                    $i < $#tokens) {
+                  
+                  $i++;
+              }
+              
+          }
       }
-      else {
-         if ($token =~ /($specials)/) {
-	     $types[$index] = [('OPERATOR', \&App::sh2p::Compound::convert_pattern)];
+      else {   # [^\$] is to avoid matching $?
+         if ($tokens[$i] =~ /[^\$]($specials)/) {
+	     $types[$i] = [('OPERATOR', \&App::sh2p::Compound::convert_pattern)];
 	 }
-	 elsif ($token eq '!') {
+	 elsif ($tokens[$i] eq '!') {
 	     $g_not = 1;
 	 }
       }
-      $index++;
    }
   
    if ($g_not) {
@@ -275,12 +314,18 @@ sub sh_test {
    }
    
    App::sh2p::Parser::convert (@tokens, @types);
+
    out ' )';
+   
+   $g_not = 0;   # This can be reset by the conversions above
 
    # We haven't finished yet!
    if (defined $rest && $rest) {
-       my @tokens = ($rest);
-       my @types  = App::sh2p::Parser::identify (2, @tokens);          
+       my @tokens = App::sh2p::Parser::tokenise ($rest);
+       my @types  = App::sh2p::Parser::identify (2, @tokens); 
+       
+       #print_types_tokens (\@types, \@tokens);
+       
        App::sh2p::Parser::convert (@tokens, @types);          
    }
 
@@ -305,6 +350,10 @@ sub Handle_if {
    
    $g_context = 'if';
    
+   if (substr($statements[-1],0,1) eq '#') {
+       pop @statements;
+   }
+   
    # First token is 'if'
    iout "$cmd ";
    
@@ -323,7 +372,8 @@ sub Handle_fi {
 
    dec_indent();
    dec_block_level();
-   out "\n";
+   #out "\n";
+   
    iout "}\n";
    
    return 1;
@@ -341,6 +391,10 @@ sub Handle_not {
 sub Handle_then {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
+
+   if (substr($statements[-1],0,1) eq '#') {
+       pop @statements;
+   }
   
    iout "{\n";
    inc_indent();
@@ -360,6 +414,10 @@ sub Handle_else {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
 
+   if (substr($statements[-1],0,1) eq '#') {
+       pop @statements;
+   }
+
    dec_indent();
    dec_block_level();
    out "\n";
@@ -375,6 +433,7 @@ sub Handle_else {
        $ntok += process_second_statement(0, @statements);
    }
    
+   $g_context = '';
    return $ntok;
 }
 
@@ -383,6 +442,10 @@ sub Handle_else {
 sub Handle_elif {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
+
+   if (substr($statements[-1],0,1) eq '#') {
+       pop @statements;
+   }
 
    dec_indent(); 
    dec_block_level();
@@ -471,8 +534,11 @@ sub Handle_case {
     if ($in ne 'in') {
         error_out ("Expected 'in', got $in");
     }
-    
-    iout "\$_ = \"$var\";\n";
+
+    iout '$_ = ';
+    App::sh2p::Handlers::interpolation ($var);
+    out ";\n";
+        
     iout "SWITCH: {\n";
 
     inc_indent();
@@ -567,7 +633,7 @@ sub Handle_for {
    # Often a variable to be converted to a list
    # Note: excludes @ and * which indicate an array
    if ($for_tokens[0] =~ /\$[A-Z0-9#{}\[\]]+/i) {
-      my $IFS = App::sh2p::Utils::get_special_var('IFS');
+      my $IFS = App::sh2p::Utils::get_special_var('IFS',0);
       $IFS =~ s/^"(.*)"/$1/;
       out "split /$IFS/,$for_tokens[0]";
       shift @for_tokens;
@@ -594,6 +660,10 @@ sub Handle_while {
 
    my ($cmd, @statements) = @_;
    my $ntok = 1;
+
+   if (substr($statements[-1],0,1) eq '#') {
+       pop @statements;
+   }
    
    # First token is 'while'
    iout "$cmd ";
@@ -720,17 +790,20 @@ sub process_second_statement {
    
    for ($i = 0; $i < @statements; $i++) {
        
-       last if $statements[$i] eq BREAK || $statements[$i] eq ';';
+       if ($statements[$i] eq BREAK || $statements[$i] eq ';') {
+           last;
+       }
    }
    
-   return 0 unless $i;
+   return 0 unless $i > 0;
    
    $statement = join (' ', splice(@statements,0,$i));
+   #print STDERR "process_second_statement: <$statement>\n";
    
    my @tokens = App::sh2p::Parser::tokenise ($statement);
    my @types  = App::sh2p::Parser::identify (0, @tokens);
 
-   #print_types_tokens (@types, @tokens);
+   #print_types_tokens (\@types, \@tokens);
 
    if ($cmd && $tokens[0] ne 'test' &&
       ($types[0][0] eq 'EXTERNAL' || 

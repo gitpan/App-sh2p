@@ -39,30 +39,13 @@ my %ioperator =
                  '||' => \&App::sh2p::Operators::shortcut,
                  '|&' => 3,
                  '&'  => 4,
-                 #'+'  => \&App::sh2p::Operators::no_change,
-                 #'-'  => \&App::sh2p::Operators::no_change,
-                 #'*'  => \&App::sh2p::Operators::no_change,
-                 #'/'  => \&App::sh2p::Operators::no_change,
-                 #'%'  => \&App::sh2p::Operators::no_change,
-                 #'?'  => \&App::sh2p::Operators::no_change,
-                 #'!'  => \&App::sh2p::Compound::Handle_not,
-                );
-
-my %iglob =
-               ( 
-                 '*'  => \&App::sh2p::Handlers::Handle_Glob,
-                 '['  => \&App::sh2p::Handlers::Handle_Glob,
-                 '?'  => \&App::sh2p::Handlers::Handle_Glob,
-                 ']'  => \&App::sh2p::Handlers::Handle_Glob,
-                 '~'  => \&App::sh2p::Handlers::Handle_Glob,
-                );
+                 );
                 
 my %idelimiter =
                ( '\''  => \&App::sh2p::Handlers::Handle_delimiter,
                  '"'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '`'   => \&App::sh2p::Handlers::Handle_delimiter,
                  '$('  => \&App::sh2p::Handlers::Handle_2char_qx,
-                 #'<<'  => \&App::sh2p::Handlers::Handle_here_doc,
                  '${'  => \&App::sh2p::Handlers::Handle_expansion,   # Problems, do specific testing?
                  '('   => \&App::sh2p::Handlers::Handle_delimiter,
                  ')'   => \&App::sh2p::Handlers::Handle_delimiter,
@@ -92,7 +75,7 @@ my %ibuiltins =
                  'exec'     => \&App::sh2p::Builtins::do_exec,
                  'exit'     => \&App::sh2p::Builtins::do_exit,
                  'export'   => \&App::sh2p::Builtins::do_export,
-                 'false'    => 6,
+                 'false'    => \&App::sh2p::Builtins::do_false,
                  'fc'       => 7,
                  'fg'       => 8,
                  'functions'=> \&App::sh2p::Builtins::do_functions,
@@ -101,7 +84,7 @@ my %ibuiltins =
                  'hash'     => 10,
                  'jobs'     => 11,
                  'kill'     => \&App::sh2p::Builtins::do_kill,
-                 'let'      => 3,
+                 'let'      => \&App::sh2p::Builtins::do_let,
                  'print'    => \&App::sh2p::Builtins::do_print,
                  'pwd'      => 5,
                  'read'     => \&App::sh2p::Builtins::do_read,
@@ -113,11 +96,12 @@ my %ibuiltins =
                  '['        => \&App::sh2p::Compound::sh_test,
                  'time'     => 12,
                  'times'    => 13,
+                 'tr'       => \&App::sh2p::Builtins::do_tr,
                  'trap'     => 14,
-                 'true'     => 15,
+                 'true'     => \&App::sh2p::Builtins::do_true,
                  'typeset'  => \&App::sh2p::Builtins::do_typeset,
                  'ulimit'   => 17,
-                 'umask'    => 18,
+                 'umask'    => \&App::sh2p::Builtins::do_chmod,
                  'unalias'  => 19,
                  'unset'    => \&App::sh2p::Builtins::do_unset,
                  'wait'     => 21,
@@ -134,21 +118,22 @@ my %perl_builtins =
                  'basename'=> [\&App::sh2p::Builtins::advise,'File::Basename::basename'],
                  'cat'     => [\&App::sh2p::Builtins::advise,'ExtUtils::Command::cat'],
                  'chmod'   => [\&App::sh2p::Builtins::do_chmod], 
-                 'chown'   => [\&App::sh2p::Builtins::do_chmod],
+                 'chown'   => [\&App::sh2p::Builtins::do_chown],
+                 'chgrp'   => [\&App::sh2p::Builtins::do_chown],
                  'cp'      => [\&App::sh2p::Builtins::advise,'File::Copy'],
                  'cut'     => [\&App::sh2p::Builtins::advise,'split'],
                  'date'    => [\&App::sh2p::Builtins::advise,'localtime or POSIX::strftime'],
                  'df'      => [\&App::sh2p::Builtins::advise,'Filesys::Df'],
                  'diff'    => [\&App::sh2p::Builtins::advise,'File::Compare'],
                  'dirname' => [\&App::sh2p::Builtins::advise,'File::Basename::dirname'],
-                 'egrep'   => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/}'],
+                 'egrep'   => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/} or perl grep'],
                  'eval'    => [\&App::sh2p::Builtins::one4one,'eval'],
                  'exec'    => [\&App::sh2p::Builtins::advise,'exec or pipe (co-processes) or open (file descriptors)'],		
                  'expr'    => [\&App::sh2p::Builtins::do_expr],
                  'find'    => [\&App::sh2p::Builtins::advise,'File::Find'],
                  'file'    => [\&App::sh2p::Builtins::advise,'File::Type'],
                  'ftp'     => [\&App::sh2p::Builtins::advise,'Net::Ftp'],
-                 'grep'    => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/}'],
+                 'grep'    => [\&App::sh2p::Builtins::advise,'while(<>){print if /re/} or perl grep'],
                  'ln'      => [\&App::sh2p::Builtins::one4one,'link'],
                  'ln -s'   => [\&App::sh2p::Builtins::one4one,'symlink'],
                  'ls'      => [\&App::sh2p::Builtins::advise,'glob or opendir/readdir/closedir or stat/lstat'],
@@ -167,15 +152,19 @@ my %perl_builtins =
                  'sort'    => [\&App::sh2p::Builtins::one4one,'sort'],
                  'tail'    => [\&App::sh2p::Builtins::advise,'File::Tail'],
                  'telnet'  => [\&App::sh2p::Builtins::advise,'Net::Telnet'],
-                 'touch'   => [\&App::sh2p::Builtins::advise,'open()/close() or ExtUtils::Command::touch'],
+                 'touch'   => [\&App::sh2p::Builtins::do_touch],
                 );
 ###########################################################
-
+# $ibuiltins added 0.04
 sub get_perl_builtin {
     my $func = shift;
     
+    
     if (defined $perl_builtins{$func}) {
         return @{$perl_builtins{$func}};
+    }
+    elsif (defined $ibuiltins{$func}) {
+        return ($ibuiltins{$func}, $func);
     }
     else {
         return ();
@@ -246,12 +235,16 @@ sub tokenise {
       elsif ($char eq '{') {  # Take into account nested {}
          $br++;
       }
-      # Major difference with v.0.03
-      elsif ($br && $char eq '}' && !$q && !$qq && !$qx && !$qp && !$qs) {   
-         $tokens[$index] .= $char;
-         $index++;
+#      Tried, but had unexpected side-effects
+#      elsif ($br && $char eq '}' && !$q && !$qq && !$qx && !$qp && !$qs) {   
+#         $tokens[$index] .= $char;
+#         $index++;
+#         $br--;
+#         next;
+#      }
+      # Modification of above 
+      elsif ($br && $char eq '}') {   
          $br--;
-         next;
       }
       elsif ($char eq '\\') {
          $tokens[$index] .= $char;
@@ -312,7 +305,7 @@ sub tokenise {
    }
    
    $tokens[$index] .= "\n" if $comment;
-    
+   
    return @tokens
 }
 
@@ -328,8 +321,9 @@ sub identify {
    my $first = $in[0];
    
    # Special processing for the first token
+   #print STDERR "identify: <$first>\n";
    
-   if ($first =~ /^\w+=/) {
+   if ($first =~ /^\w+\+?=/) {
       $out[0] = [('ASSIGNMENT', 
                  \&App::sh2p::Handlers::Handle_assignment)];
       shift @in
@@ -344,7 +338,7 @@ sub identify {
                  \&App::sh2p::Handlers::Handle_break)];
       shift @in
    }
-   elsif (!$nested && $first =~ /^\$[A-Z0-9#@*{}\[\]]+$/i) { 
+   elsif (!$nested && $first =~ /^\$[A-Z0-9#@*{}\[\]]+/i) {   # $(eol) removed 0.04
        # Not a variable, but a call (variable contains call name)
        $out[0] = [('EXTERNAL',
                   \&App::sh2p::Handlers::Handle_external)];
@@ -355,7 +349,7 @@ sub identify {
    
    for my $token (@in) {
    
-      #print STDERR "Identify: <$token>\n";
+      #print STDERR "Identify token: <$token> <$nested>\n";
    
       my $type = 'UNKNOWN';
       my $sub  = \&App::sh2p::Handlers::Handle_unknown;
@@ -374,12 +368,15 @@ sub identify {
       }
       elsif (exists $ioperator{$token} && $nested < 2) {
          $sub  = $ioperator{$token};
-         $type = 'OPERATOR'
+         $type = 'OPERATOR';
+         # Shortcut, next is another command
       }
-      elsif (exists $iglob{$token}) {
-         $sub  = $iglob{$token};
-         $type = 'GLOB';
-      }
+      #elsif (exists $iglob{$token}) {
+      #elsif ($token =~ /^[^\$].*\[|\*|\?/) {
+      #print STDERR "identify: <$token>\n";
+      #   $sub  = \&App::sh2p::Handlers::Handle_Glob;
+      #   $type = 'GLOB';
+      #}
       elsif (exists $ibuiltins{$token} && $nested < 2) {
          $sub  = $ibuiltins{$token};
          $type = 'BUILTIN'
@@ -411,9 +408,9 @@ sub identify {
          }
          elsif ($first_char eq '~') {
             $type = 'GLOB';
-            $sub  = $iglob{$first_char};
+            $sub  = \&App::sh2p::Handlers::Handle_Glob;
          }
-         elsif ($first_char eq '$' && $token =~ /^\$[A-Z0-9#@*\{\}\[\]]+$/i) {        
+         elsif ($first_char eq '$' && $token =~ /^\$[A-Z0-9\#\@\*\?\{\}\[\]]+$/i) {        
             $type = 'VARIABLE';
             $sub  = \&App::sh2p::Handlers::Handle_variable
          }
@@ -433,6 +430,12 @@ sub identify {
             $sub  = $ioperator{$first_char};
             $type = 'OPERATOR'
          }
+         elsif ($token =~ /\[|\*|\?/ && !query_in_quotes()) {
+            # No globbing inside quotes
+	    $sub  = \&App::sh2p::Handlers::Handle_Glob;
+	    $type = 'GLOB';
+	 }
+
       }
       push @out, [($type, $sub)];
    }
@@ -466,7 +469,7 @@ sub convert (\@\@) {
     
       my $type = $rtype->[0][0];
       my $sub  = $rtype->[0][1];
-
+      
       if (ref($sub) eq 'CODE' ) {
          $tokens_processed = &$sub(@$rtok);
       }
@@ -500,7 +503,7 @@ sub join_parse_tokens {
         my @tokens = ($args[$i]);
         my @types  = identify (2, @tokens);
        
-        # print_types_tokens(\@types, \@tokens);
+        #print_types_tokens(\@types, \@tokens);
        
         convert (@tokens, @types);       
         out $sep if $i < $#args;      
@@ -514,25 +517,59 @@ sub join_parse_tokens {
 sub analyse_pipeline {
     my @args = @_;
     my $ntok = @args;
+    my $end_value = '';
     
     error_out ();
     error_out "Pipeline '@args' detected";
+    
+    #my @caller = caller();
+    #print STDERR "analyse_pipeline: <@args><@caller>\n";
     
     # Get commands, sometimes the | is separate, sometimes not
     @args = split /\|/, "@args";
     
     App::sh2p::Handlers::no_semi_colon();
     
-    for (@args) {
-        s/^\s+//; 
-        s/\s+$//;
+    # Let's make a guess.  echo or print at the front usually means
+    # that the command which follows wants a string
+    if ($args[0] =~ s/^(echo |print )//) {
+        $end_value = shift @args;         
+    }
+    
+    for (my $i = 0; $i < @args; $i++) {
+        $args[$i] =~ s/^\s+//; 
+        $args[$i] =~ s/\s+$//;
         
-        my @tokens = split;    # default: whitespace on $_
-        my @types  = identify (1, @tokens);
+        my @tokens = tokenise ($args[$i]);
+        my @types  = identify (0, @tokens);
+        
+        # We are delimited by |, so get the arguments as well
+        # external call is not the last in the pipe, change to back-ticks
+        if ( $types[0][0] eq 'EXTERNAL' && $i < $#args) {
+        
+            @types = (['DELIMITER',\&App::sh2p::Handlers::Handle_2char_qx]);
+            @tokens = ("\$(@tokens)");
+            
+            if ($args[$i+1] =~ /^\s*grep/) {
+                # Switch next command around with this
+                $i++;
+                $args[$i] =~ s/^\s+//; 
+		$args[$i] =~ s/\s+$//;
+
+                my @next_tokens = tokenise ($args[$i]);
+                my @next_types  = identify (0, @next_tokens);
+                convert (@next_tokens, @next_types);
+            }
+        }
+
+	#print_types_tokens (\@types, \@tokens);
 	
 	convert (@tokens, @types);
-        out "\n";
+	out '|' if $i < $#args;
     }
+    out "$end_value";
+    out "\n" if !App::sh2p::Compound::get_context();
+    
     App::sh2p::Handlers::reset_semi_colon();
     error_out ();
     

@@ -44,3 +44,27 @@ Revision history for Perl extension App::sh2p.
 	- fixed bug concerning comment after redirection
 	- fixed bug when testing the 'system' command - now test explictly for zero return.
 	- fixed bug where a user function call with no arguments gave a single double-quote.
+0.04  Fri Sep 20 17:00:00 2008
+	- removed the Runtime module and the -r option
+	- added -t option for test output (not for general use)
+	- heredoc subroutines are now appended as required
+	- support for true and false
+	- support for text permissions in chmod
+	- implemented 'let', umask, chgrp
+	- built-in support for tr (which may use lc or uc)
+	- built-in support for touch
+	- some improvements to string handling
+	- improvements to cd
+	- arrays are supported, including set -A, [*] and [@] quoted and non-quoted, ${!array[@]}, ${#array[@]}
+	- improvements to pipeline handling
+	- limited support for subshells
+	- fixed bugs concerning multiple and logical operators in test, [, and [[
+	- fixed bug when a comment followed a compound statement (while, if, else, etc.)
+	- fixed bug concerning variable handling in case statement
+	- fixed bug where some glob constructs were incorrectly quoted
+	- fixed implementation of chown
+	- fixed bug where some INSPECT messages could be displayed several times 
+	  for each occurence
+	- Improved error reporting
+
+

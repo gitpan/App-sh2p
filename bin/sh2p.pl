@@ -30,10 +30,10 @@ my %g_block_commands = ('while'  => 'done',
 
 # Runtime options
 my $g_integer = 1;
-my $g_runtime = 1;
 my $g_clobber = 0;
+my $g_display = 0;
 
-our $VERSION = 0.03;
+our $VERSION = 0.04;
 our $DEBUG   = 0;
 
 ###########################################################
@@ -97,7 +97,14 @@ sub outer
       
       reset_globals();
       @the_script = pre_process (@the_script);
-      process_script (@the_script);
+      
+      # Test in case the file is empty
+      if (@the_script) {
+          process_script (@the_script);
+      }
+      else {
+          error_out "Nothing found to process";
+      }
       
       close_out_file();
    }
@@ -122,6 +129,11 @@ sub pre_process
                       '"' => '"');
     
     my $open_delimiters = '['.join('',keys(%delimiters)).']';
+
+    # Inspect the first line for the shell
+    if ($in_lines[0] =~ /^#!\s*.*\/(\w+)/) {
+        set_shell ($1);
+    }
 
     for (my $i = 0; $i < @in_lines; $i++) {
         my $line = $in_lines[$i];
@@ -184,8 +196,9 @@ sub process_script (\@)
   
    # Maybe make this optional?
    if ( $ref->[0] =~ /^#!/ ) {
-      if ($ref->[0] =~ /^#!.*\/(t?csh)/) {
-         die "Sorry, I cannot convert $1 scripts\n";
+      if ($ref->[0] =~ /^#!.*(t?csh|perl|awk|sed)/) {
+         warn "This file appears to be a $1 script - abandoned\n";
+         return;
       }
       $index = 1;
    }
@@ -196,8 +209,7 @@ sub process_script (\@)
    out "use warnings;\n";
    out "use strict;\n";
    
-   out "use integer;\n"            if $g_integer;
-   out "use App::sh2p::Runtime;\n" if $g_runtime;
+   out "use integer;\n" if $g_integer;
    out "\n";
    flush_out ();
     
@@ -233,6 +245,11 @@ sub process_script (\@)
          
          if ( $DEBUG ) {
              print STDERR "\nProcessing <$line>\n";
+         }
+         
+         # Option -t (testing) - ignore comment lines
+         if ($g_display  && $line !~ /^\s*#/) {
+             out ("#< $line\n");
          }
          
          # Hack for here-docs
@@ -319,6 +336,9 @@ sub process_script (\@)
                 $delimiter eq 'done' )
              ) {
             my @types  = App::sh2p::Parser::identify (0, @statement_tokens);
+            
+            #print_types_tokens (\@types, \@statement_tokens);
+            
             App::sh2p::Parser::convert (@statement_tokens, @types);
             @statement_tokens = ();
          }
@@ -333,17 +353,22 @@ sub process_script (\@)
       }
       
       # At end
-      #out "\n" if ( !defined $here_label );
+      
       flush_out ();
+      
       $line = undef;
    }
+   
+   App::sh2p::Handlers::write_subs();
+   App::sh2p::Here::write_here_subs();
+   flush_out ();
  
 }  # process_script
    
 ###########################################################
 
 sub usage {
-   print STDERR "Usage: sh2p.pl [-i] [-r] [-f] input-file output-file | input-files... out-directory\n";
+   print STDERR "Usage: sh2p.pl [-i] [-t] [-f] input-file output-file | input-files... out-directory\n";
    exit 1;
 }
 
@@ -351,10 +376,10 @@ sub usage {
 # main
 my %args;
 
-getopts ('irf', \%args);
+getopts ('ift', \%args);
 $g_integer = 0 if exists $args{'i'};
-$g_runtime = 0 if exists $args{'r'};
 $g_clobber = 1 if exists $args{'f'};
+$g_display = 1 if exists $args{'t'};
 
 if ( @ARGV < 2 ) {
    usage();
