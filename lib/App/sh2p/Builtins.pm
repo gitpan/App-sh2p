@@ -6,10 +6,8 @@ use App::sh2p::Utils;
 use App::sh2p::Parser;
 use App::sh2p::Here;
 
-sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => 0x07);
-
-our $VERSION = '0.04';
+our $VERSION = '0.05';
+sub App::sh2p::Parser::convert(\@\@);
 
 my %g_shell_options;
 my %g_file_handles;
@@ -61,8 +59,24 @@ sub general_arg_list {
     $semi = ';' if query_semi_colon();
           
     # Parse arguments
-    for my $arg (@args) {           
+    for my $arg (@args) { 
+    
+        last if is_break($arg);  # 0.05
+        last if $arg eq ';';     # January 2009
         $ntok++;
+        
+        # Here doc January 2009
+        if ( $arg eq '<<' ) {
+           my $heredoc = App::sh2p::Here::get_last_here_doc();
+	   
+	   if (defined $heredoc) {
+	      my $filename = App::sh2p::Here::gen_filename($heredoc);
+	      App::sh2p::Here::abandon_sh2p_here_subs ();
+	      error_out("Heredoc replaced by simple redirection");
+	      $arg = "< $filename";
+           } 
+           next;      # Yuk!
+        }
 
         # Wrap quotes around it:
         #    if it is not a digit && it doesn't already have quotes &&
@@ -75,6 +89,7 @@ sub general_arg_list {
         }
     }    
 
+    #{local $" = '|';print STDERR "general_arg_list: <@args>\n";}
     iout "$cmd (";
     App::sh2p::Parser::join_parse_tokens (',', @args);
     out ")$semi $last";
@@ -116,7 +131,7 @@ sub do_autoload {
     
     for my $func (@functions) {
         my $first_char = substr($func,0,1);
-        last if $func eq BREAK || $func eq ';' || $first_char eq '#';
+        last if is_break($func) || $func eq ';' || $first_char eq '#';
 
         if ($first_char eq '$') {
             # $cmd used - this might be called from typedef
@@ -229,7 +244,8 @@ sub do_cd {
        $args[$i] .= '.' if $i < $#args;
    } 
    
-   $ntok += App::sh2p::Parser::join_parse_tokens ('.', @args);
+#   $ntok += App::sh2p::Parser::join_parse_tokens ('.', @args);
+   App::sh2p::Parser::join_parse_tokens ('.', @args);
    
    out ')';
 
@@ -566,6 +582,8 @@ sub do_kill {
         $signal = shift @rest;
     }
 
+    #print STDERR "do_kill: <@rest>\n";
+
     return general_arg_list ($cmd, $signal, @rest);
 }
 
@@ -589,9 +607,9 @@ sub do_let {
 
         # Get variable name
         $token =~ /^(.*?)=/;
-        my $var = $1;
+        my $var = "\$$1";
         if (Register_variable($var, int)) {
-            iout "my $var;\n";
+            iout "my $var;\n";      # 0.05 added leading $
         }
         
         App::sh2p::Compound::arith ($token);
@@ -609,14 +627,15 @@ sub do_print {
    my ($name, @args) = @_;
    my $newline = 1;
    my $handle = '';
-   
+
    my $opt_u;
-   my %args;
+   my %options;
    local @ARGV;
 
    my $redirection = '';
-   my $file = '';
-
+   my $file        = '';
+   my $from_fd     = '';       # TODO - not currently supported
+   
    # Move the comment to before the statement
    if ( substr($args[-1],0,1) eq '#' ) {
        my $comment = pop @args;
@@ -626,7 +645,8 @@ sub do_print {
    }
    
    for my $arg (@args) {
-       last if $arg eq BREAK || $arg eq ';';
+       last if is_break($arg) || $arg eq ';';
+       my $in_redirection_token = 0;
        
        # This is so a > inside a string is not seen as redirection
        if ($arg =~ /^([\"\']).*?\1/) {
@@ -635,63 +655,100 @@ sub do_print {
        
        # This should also strip out the redirection
        if (!query_in_quotes() && $arg =~ s/(\>{1,2})//) {
-           $redirection = $1;     
+           
+           $ntok++;
+           $redirection = $1;
+           $in_redirection_token = 1;
+           
+           if ($ARGV[-1] =~ /\d/) {
+	       $from_fd = pop @ARGV;
+               error_out ("dup file descriptors ($from_fd>&n) not currently supported");
+               $ntok++;
+           }
        }
        
        if ($arg && $redirection && (! $file)) {
            $arg =~ s/(\S+)//;
            $file = $1;
+           $ntok++ unless $in_redirection_token;
        }
        
        unset_in_quotes();
        push @ARGV, $arg if $arg;
-       $ntok++;
+       #$ntok++;    0.05 commented out
    }
    
    if ($redirection) {
-       App::sh2p::Handlers::Handle_open_redirection ($redirection, $file);    
+       
+       #print STDERR "do_print redirection file <$file>\n";
+       # January 2009
+       if ( $file =~ /^\&(\d+)$/ ) {
+           my $fd = $1;
+           if ($fd == 1) {
+               $handle = 'STDOUT ';
+           }
+           elsif ($fd == 2) {
+               $handle = 'STDERR ';
+           }
+           else {
+               error_out ('file descriptors not currently supported');
+               $handle = "$fd ";  # Just to show something 
+           }
+           $redirection = 0;    # Avoid the close
+       }
+       else {
+           App::sh2p::Handlers::Handle_open_redirection ($redirection, $file);    
+           $handle = '$sh2p_handle ';
+       }
+   }
+   elsif (App::sh2p::Handlers::Query_redirection('w')) {
+       # Redirection may have been done in sh2p
+       $redirection = 1;
        $handle = '$sh2p_handle ';
    }
    
-   getopts ('nEepu:', \%args);
-      
+   my $ARGV_length = @ARGV;   # 0.05
+   getopts ('nEepu:', \%options);
+   
+   # How many tokens have I processed?
+   $ntok += $ARGV_length - @ARGV;   # 0.05
+   
    # Ignore -e and -E options (from echo)
-   if (exists $args{n}) {
+   if (exists $options{n}) {
        $newline = 0;
    }
    
    if ($name eq 'print') {
-       if (exists $args{p}) {
+       if (exists $options{p}) {
            error_out ('Pipes/co-processes are not supported, use open');
        }
        
-       if (exists $args{u} && defined $args{u}) {
+       if (exists $options{u} && defined $options{u}) {
            my @handles = ('', 'STDOUT ', 'STDERR ');
-           if ($args{u} > $#handles) {
+           if ($options{u} > $#handles) {
                error_out ('file descriptors not currently supported');
-               $handle = "$args{u} ";  # Just to show something 
+               $handle = "$options{u} ";  # Just to show something 
            }
            else {
-               $handle = $handles[$args{u}];
+               $handle = $handles[$options{u}];
            }
        }
    }
    
    iout ("print $handle");
    
-    my @args = @ARGV;
+    @args = @ARGV;    # Removed the 'my'   0.05
     
     # Is final token a comment?    
     pop @args if substr($args[-1],0,1) eq '#';
 
-    $ntok += @args;
     my $string = '';
+    my @trailing_tokens;
     
     # C style for loop because I need to check the position
     for (my $i = 0; $i < @args; $i++) {
-   
+        
         # Strip out existing quotes
-        #$args[$i] =~ s/^([\"\'])(.*)\1(.*)$/$2$3/;
         if ($args[$i] =~ s/^([\"])(.*)\1(.*)$/$2$3/) {
             set_in_quotes();
         }
@@ -701,12 +758,18 @@ sub do_print {
 
         #print_types_tokens(\@types, \@tokens);
         
-        if ($types[0][0] eq 'UNKNOWN' || $types[0][0] eq 'SINGLE_DELIMITER') {
+        if ($types[0][0] eq 'UNKNOWN' || 
+            $types[0][0] eq 'SINGLE_DELIMITER' ||
+            $types[0][0] eq 'TWO_CHAR_DELIMITER') {      # 0.05
         
             $string .= "$tokens[0]";
             
             # append with a space for print/echo
             $string .= ' ' if $i < $#args; 
+        }
+        elsif ($types[0][0] eq 'OPERATOR') {   # 0.05
+            @trailing_tokens = splice (@args, $i);
+            last;
         }
         else {
         
@@ -719,7 +782,8 @@ sub do_print {
             App::sh2p::Parser::convert (@tokens, @types); 
             out ',' if $i < $#args; 
         }
-        #unset_in_quotes();     commented out in 0.04
+        
+        $ntok++;    # 0.05 (moved)
     }
        
     if ($string && $string ne ' ') {
@@ -732,16 +796,25 @@ sub do_print {
     elsif ($newline) {
        out ",\"\\n\""
     }
-       
-    out ";\n";
+    
+    if (@trailing_tokens) {    # 0.05
+        out " ";    # cosmetic
+        $ntok += @trailing_tokens;
+        my @trailing_types  = App::sh2p::Parser::identify (1, @trailing_tokens);
+        App::sh2p::Parser::convert (@trailing_tokens, @trailing_types); 
+    }
+    else {
+        out ";\n";
+    }
     
     # An ugly hack, but necessary where the first arg is parenthesised
     fix_print_arg();
     
-    App::sh2p::Handlers::Handle_close_redirection() if $redirection;
+    App::sh2p::Handlers::Handle_close_redirection('w') if $redirection;
 
     return $ntok;
-}
+    
+}   # do_print
 
 ########################################################
 
@@ -757,7 +830,7 @@ sub do_read {
    
    # Find end of statement
    for my $arg (@_) {   
-      last if $arg eq BREAK || $arg eq ';';   # Inserted in sh2p loop
+      last if is_break($arg) || $arg eq ';';   # Inserted in sh2p loop
       push @ARGV, $arg;
       $ntok++;
    }
@@ -774,19 +847,37 @@ sub do_read {
       $prompt  = $2;
    }   
 
+   # Default variable
+   @ARGV = ('REPLY') if ! @ARGV;     
+
    # Add $ prefix to variable names   
    # Do I need to pre-define them?
-   for my $var (@ARGV) {
+   for (my $i = 0; $i < @ARGV; $i++) {
+
        if (exists $args{a} || exists $args{A}) {
-           $var = "\@$var";
-           if (Register_variable($var, '@')) {
-               iout "my $var;\n";
+           $ARGV[$i] = "\@$ARGV[$i]";
+           if (Register_variable($ARGV[$i], '@')) {
+               pre_out "my $ARGV[$i];\n";
            }
        }
+       elsif ($ARGV[$i] =~ s/^<//) {
+           my $filename;
+           if (defined $ARGV[$i] && $ARGV[$i]) {
+               $filename = $ARGV[$i];
+           }
+           else {
+               $filename = $ARGV[$i+1];
+           }
+           pop @ARGV;
+           pop @ARGV if $i == $#ARGV;
+           
+           App::sh2p::Handlers::Handle_open_redirection('<', $filename);
+           
+       }
        else {
-           $var = "\$$var";
-           if (Register_variable($var, '$')) {
-               iout "my $var;\n";
+           $ARGV[$i] = "\$$ARGV[$i]";
+           if (Register_variable($ARGV[$i], '$')) {
+               pre_out "my $ARGV[$i];\n";
            }
        }
    }
@@ -801,7 +892,11 @@ sub do_read {
    my $heredoc = App::sh2p::Here::get_last_here_doc();
    
    if (defined $heredoc) {
-      iout "sh2p_read_from_here ('$heredoc', \"IFS\",0), $prompt, ". 
+      my $filename = App::sh2p::Here::gen_filename($heredoc);
+      if (Register_variable('$IFS', '$')) {
+          pre_out "my \$IFS=".get_special_var('IFS').";\n";
+      }
+      iout "sh2p_read_from_file ('$filename', \"\$IFS\", $prompt, ". 
              '\\'.(join ',\\', @ARGV).")";
       App::sh2p::Here::store_sh2p_here_subs();
    } 
@@ -816,14 +911,33 @@ sub do_read {
           }
       }
       else {
-          iout "sh2p_read_from_stdin (\"\$IFS\", $prompt, ".
-                 '\\'.(join ',\\', @ARGV).")";
+          if (Register_variable('$IFS', '$')) {
+              pre_out "my \$IFS=".get_special_var('IFS').";\n";
+          }
+          
+          my $filename = App::sh2p::Handlers::Query_redirection('r');
+          
+          if (defined $filename) {
+              iout 'sh2p_read_from_handle ($sh2p_handle,"$IFS",'."$prompt,".
+                     '\\'.(join ',\\', @ARGV).")";
+          }
+          else {
+              iout "sh2p_read_from_stdin (\"\$IFS\", $prompt, ".
+                     '\\'.(join ',\\', @ARGV).")";
+          }
+          
+          if (!App::sh2p::Compound::get_context()) {
+              out ";\n";
+              App::sh2p::Handlers::Handle_close_redirection('r');
+          }
+
           App::sh2p::Here::store_sh2p_here_subs();
       }
    }
    
    return $ntok;
-}
+   
+}  # do_read
 
 ########################################################
 
@@ -857,7 +971,7 @@ sub do_shift {
    my (undef, $level) = @_;
    my $ntok = 1;
    
-   if (defined $level && $level =~ /^\d+$/) {
+   if (defined $level && $level =~ /^\d+$/ && !is_break($level)) {
       $ntok++;
    }
    else {
@@ -879,7 +993,7 @@ sub do_shopt {
    my @options;
    
    for my $option (@rest) {
-       last if $option eq BREAK || $option eq ';' || substr($option,0,1) eq '#';
+       last if is_break($option) || $option eq ';' || substr($option,0,1) eq '#';
        push @options, $option;
        $ntok++;
    }  
@@ -1013,7 +1127,8 @@ sub do_typeset {
    my $ntok = @_;
    my %args;
    
-   # First argument should be 'typeset'
+   #print STDERR "do_typeset: $_[0]\n";
+   # First argument should be 'typeset' or 'declare'
    shift @_;
    
    local @ARGV = @_;
@@ -1061,8 +1176,9 @@ sub do_typeset {
    if (Register_variable ("\$$var", $type) ) {
           iout 'my ';
    }
-    
-   $ntok += App::sh2p::Handlers::Handle_assignment (@ARGV);
+   
+   #$ntok +=    January 2009 
+   App::sh2p::Handlers::Handle_assignment (@ARGV);
    
    return $ntok;
 }
@@ -1073,7 +1189,8 @@ sub do_typeset {
 
 sub do_set {
    
-   my $ntok = @_;
+   my $ntok = 1;
+   
    # First argument is 'set'
    shift @_;
    my @values;
@@ -1091,26 +1208,47 @@ sub do_set {
               else {
                  overwrite_array (@_);
               }
-         
+              
+              $ntok += @_;   # Added 0.05
               last;
           }
+      }
+      elsif (is_break($option)) {
+          last
       }
       else {
           push @values, $option;
       }
+      $ntok++;
    }  
    
    if (@values) {
-        iout "\@ARGV = ();\n";
-        iout "push \@ARGV,(";
+        my $IFS = get_special_var('IFS');
         
-        App::sh2p::Parser::join_parse_tokens (',', @values);
+        iout "\@ARGV = (";
+        for (my $i=0; $i < @values;$i++) {
+            my @tokens = ($values[$i]);
+            #print STDERR "do_set: <$values[$i]>\n";
+            
+            my @types  = App::sh2p::Parser::identify (2,@tokens);
+            if ($values[$i] =~ /^[\"\']*\$/ && !get_special_var($values[$i])) {
+                out "(split /[$IFS]/,";
+                App::sh2p::Parser::convert (@tokens, @types); 
+                out ")";
+            }
+            else {
+                App::sh2p::Parser::convert (@tokens, @types);                 
+            }
+            out ',' if $i < $#values;
+        }
+        #App::sh2p::Parser::join_parse_tokens (',', @values);
                 
         out ");\n";
    }
    
    return $ntok;
-}
+   
+}  # do_set
 
 # set -A
 sub initialise_array {
@@ -1224,3 +1362,48 @@ sub do_unset {
 ########################################################
 
 1;
+
+__END__
+=head1 Summary
+package App::sh2p::Builtins;
+sub not_implemented 
+# For builtins/functionality that cannot be implemented 
+sub one4one
+sub general_arg_list 
+sub advise
+sub do_autoload
+sub do_break 
+sub do_colon 
+sub do_continue
+sub do_cd
+sub chmod_text_permissions
+sub do_chmod 
+# also used by umask
+sub do_chown 
+sub do_exec 
+sub do_exit 
+sub do_export 
+sub do_expr 
+sub do_functions 
+sub do_integer
+sub do_kill 
+sub do_let 
+sub do_print
+sub do_read
+sub do_return
+sub do_shift
+sub do_shopt
+sub do_source
+sub do_touch
+sub do_tr
+sub do_typeset
+sub do_set
+sub initialise_array
+# set -A
+sub overwrite_array
+# set +A
+sub do_true
+sub do_false
+sub do_unset
+
+=cut

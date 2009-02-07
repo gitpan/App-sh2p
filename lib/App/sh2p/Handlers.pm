@@ -6,19 +6,18 @@ use App::sh2p::Parser;
 use App::sh2p::Utils;
 use App::sh2p::Here;
 
-sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => 0x07);
-
-our $VERSION = '0.04';
+our $VERSION = '0.05';
+sub App::sh2p::Parser::convert(\@\@);
 
 my $g_unterminated_backtick = 0;
+my $g_redirect_filename_w;
+my $g_redirect_filename_r;
 my %g_subs;
 
 #  For use by App::sh2p only
 ############################################################################
 
 sub Handle_assignment {
-   # Currently does not handle arrays
    
    my $ntok = 1;
    my ($in, @rest)  = @_;
@@ -30,8 +29,16 @@ sub Handle_assignment {
    my $sign = $2;
    my $rhs  = $3;
    
-   if (defined get_special_var($lhs,0)) {
+   my $special_var = get_special_var($lhs,0);   # January 2009
+   
+   if (defined $special_var) {
       set_special_var ($lhs, $rhs);
+      if ($special_var =~ s/^\$//) {
+          $lhs = $special_var;      # Converted special variable
+      }
+      else {
+          $special_var = undef;
+      }
    }   
 
    # Bash 3.0, ksh93 array initialisation
@@ -41,7 +48,7 @@ sub Handle_assignment {
 
    my $name = "\$$lhs";
    
-   if (Register_variable ($name) ) {
+   if (!defined $special_var && Register_variable ($name) ) {
        iout "my $name";
    }
    else {
@@ -83,7 +90,7 @@ sub Handle_assignment {
       }
       
       for my $tok (@rest) {
-          last if substr($tok,0,1) eq '#';
+          last if substr($tok,0,1) eq '#' || is_break($tok);
           $rhs .= "$tok ";
           $ntok++;
       }
@@ -103,13 +110,12 @@ sub Handle_assignment {
       if ($isa_int) {
          out ")";
       }
-
    }
    
    out ';';
-   if ($ntok == @_) {
+   #if ($ntok == @_) {  0.05  (regression OK)
        out "\n";
-   }
+   #}
    
    return $ntok;
 }
@@ -140,7 +146,6 @@ sub Handle_list_assign {
        last if ($elements[0] =~ /^\s*\[\d+\]=/);
 
        push @initial,(shift @elements);
-       
    }
    
    if (@initial) {
@@ -197,6 +202,19 @@ sub Handle_list_assign {
 
 ############################################################################
 
+sub define_idx_var {
+
+    my $var = shift;
+    
+    $var =~ s/^\$//;    # remove leading $, if any 
+    
+    $var =~ s/\s*[\+\-\*\/]?\s*\d+\s*//;    # remove arithmetic
+    
+    if (Register_variable ($var, '$') ) {
+       iout "my \$$var;\n";
+    }
+}
+
 sub Handle_array_assignment {
    my $ntok = @_;
    my $in  = shift;
@@ -213,25 +231,32 @@ sub Handle_array_assignment {
       die "++++ Internal error No rhs in array assignment. <$in>"
    }
       
-   if (Register_variable ($arr, '@') ) {
+   if (Register_variable ("\@$arr", '@') ) {
           iout "my \@$arr;\n";
    }
 
    # The shell allows a variable index without a '$'
-   if ($idx =~ /^[[:alpha:]_]/)  {  # No '$' [count + 1], or just [i]
-      iout "\$$arr\[\$$idx\] = ";
+   if ($idx =~ /^[[:alpha:]_]/)  {  # No '$' [count + 1], or [i] ([1 + count] is illegal)
+       
+       define_idx_var ($idx);
+       
+       iout "\$$arr\[\$$idx\] = ";
    }
    elsif ( $idx =~ /^\D+$/) {       # \D is non-digit
        # Process the lhs
          
        my @tokens = App::sh2p::Parser::tokenise ($idx);
        my @types  = App::sh2p::Parser::identify (1, @tokens); 
-       
+ 
        iout "\$$arr\[";  
        App::sh2p::Parser::convert (@tokens, @types);
        out "] = ";
    }
    else {
+       if ( $idx =~ /^\s*\$/ ) {
+           define_idx_var ($idx);
+       }
+       
        iout "\$$arr\[$idx\] = ";
    }
    
@@ -262,10 +287,10 @@ sub Handle_break {
 
    # Maybe check to see if we are in a heredoc?
    
-   # 0.04
-   if (!App::sh2p::Utils::new_line()) {
-       out "\n";
-   }
+   # 0.05
+   #if (!App::sh2p::Utils::new_line()) {
+   #    out "\n";
+   #}
    
    return 1;
 }
@@ -275,20 +300,63 @@ sub Handle_break {
 sub Handle_open_redirection {
     my ($type, $filename) = @_;
     
-    # print STDERR "Handle_open_redirection: <$type> <$filename>\n";
-    out ("\n");   
-    iout ("open(my \$sh2p_handle,'$type',\"$filename\") or\n");
-    iout ("     die \"Unable to open $filename: \$!\";\n");
+    #print STDERR "Handle_open_redirection: <$type> <$filename>\n";
+    my @caller = caller();
+    #print STDERR "Handle_open_redirection: @caller\n";
     
+    out ("\n");
+    
+    my $var = 'sh2p_handle';
+    if (Register_variable($var, '$')) {
+       rd_iout "my \$$var;\n";
+    }
+    
+    rd_iout ("open(\$$var,'$type',\"$filename\") or\n");
+    rd_iout ("     die \"Unable to open $filename: \$!\";\n");
+    
+    if ( $type eq '>' || $type eq '>>' ) {
+        $g_redirect_filename_w = $filename;
+    }
+    else {
+        $g_redirect_filename_r = $filename;
+    }
 }
 
 ############################################################################
 
 sub Handle_close_redirection {
    
-    iout ("close(\$sh2p_handle);\n");
-    iout ("undef \$sh2p_handle;\n\n");
+    my ($mode) = @_;
+    my $filename;
     
+    if ($mode eq 'w') {
+        $filename = $g_redirect_filename_w;
+        $g_redirect_filename_w = undef; 
+    }
+    else {
+        $filename = $g_redirect_filename_r;
+        $g_redirect_filename_r = undef; 
+    }
+    
+    if (defined $filename) {
+        iout ("close(\$sh2p_handle);\n");
+        iout ("undef \$sh2p_handle;\n\n");
+    }
+    
+    return 1;   # In case it gets used as a token
+}
+
+############################################################################
+
+sub Query_redirection { 
+    my ($mode) = @_;
+    
+    if ($mode eq 'w') {
+        return $g_redirect_filename_w;
+    }
+    else {
+        return $g_redirect_filename_r;
+    }
 }
 
 ############################################################################
@@ -297,9 +365,8 @@ sub Handle_variable {
    my ($token, $join) = @_;
    my $new_token;
    
-   #print STDERR "Handle_variable: <$token> ".query_in_quotes()."\n";
-   # my @caller = caller();
-   # print STDERR "Called from @caller\n";
+   #print STDERR "Handle_variable: <$token> ".query_in_quotes()." context: <".
+   #             App::sh2p::Compound::get_context().">\n";
    
    # Check for specials
    if ($new_token = get_special_var($token)) {
@@ -362,7 +429,6 @@ sub Handle_variable {
                $token = "\@$token";
            }
        }
-
 
    }
       
@@ -501,6 +567,18 @@ sub Handle_delimiter {
       # Could be compound assignment (like +=)
       out "\$$lhs= $rhs;\n";  
    }
+   elsif (substr($tok,0,1) eq '"') {
+         # Special case for an empty string  January 2009
+         if ($tok eq '""') {      
+             out $tok;
+         }
+         else {
+             interpolation($tok);
+         }
+   }
+   elsif (substr($tok,0,1) eq "'") {
+         out $tok;
+   }
    elsif ($tok =~ s/^\((.+)\)/$1/) {      # subshell
       Handle_subshell ($tok);
    }
@@ -512,7 +590,7 @@ sub Handle_delimiter {
    elsif ($tok eq ';') {
       out "\n";
    }
-   elsif ( $tok =~ /\|/) {
+   elsif ( $tok =~ /\|[^\|]/) {    # RE change 0.05       
        shift @_;
        out $tok;
        if ( @_ ) {
@@ -522,24 +600,32 @@ sub Handle_delimiter {
    elsif ($tok =~ /^#/ && App::sh2p::Utils::new_line()) {
       out $tok;
    }
-   elsif ($tok =~ /\`\s*(.*)\s*\`(.*)/) {
-      my $cmd  = $1;
-      my $rest = $2;
+   elsif ($tok =~ /^(.*)\`\s*(.*)\s*\`(.*)/ && substr($tok,0,1) ne '"') {
+      my $preamble = $1;      # Added January 2009
+      my $cmd      = $2;
+      my $rest     = $3;
       my @cmd = split (/\s+/, $cmd);
       my @perlbi;
 
       if (@perlbi = App::sh2p::Parser::get_perl_builtin($cmd[0])) {
-          
+          # print STDERR "Handle_delimiter2: <@cmd> <$rest>\n";
           # Do my best to trap unnecessary child processes
           out "\n" if query_semi_colon();    # For tidy messages
-          &{$perlbi[0]}(@cmd,$rest);
+          #&{$perlbi[0]}(@cmd,$rest);
+          &{$perlbi[0]}(@cmd);
+          
+          if ($rest) {
+              unless ($preamble eq $rest && 
+                     ($rest eq '"' or $rest eq "'"))
+              {
+                  out '.';
+                  interpolation ($rest);
+              }
+          }
       }
       else {
           out " $tok ";
       }
-   }
-   elsif (substr($tok,0,1) eq '"') {
-      interpolation($tok);
    }
    else {
       out " $tok";
@@ -558,6 +644,7 @@ sub Handle_subshell {
    error_out "Subshell: ($subshell)";
    iout "{\n";
    inc_indent();
+   inc_block_level();    # 0.05
    mark_subshell();
    iout "local \%ENV;\n";      # one of the features of a subshell
       
@@ -572,6 +659,7 @@ sub Handle_subshell {
    }
    
    dec_indent();
+   dec_block_level();    # 0.05
    unmark_subshell();
    out "}\n";
 
@@ -584,6 +672,8 @@ sub interpolation {
    my $delimiter = '';
    
    #print STDERR "interpolation: <$string>\n";
+   #my @caller = caller();
+   #print STDERR "@caller\n";
    
    # single quoted string
    if ($string =~ /^(\'.*\')(.*)/) {
@@ -625,14 +715,14 @@ sub interpolation {
        elsif ($chars[$i] eq '`') {
            out '".';
            $delimiter = '`';
-           
+         
            my $cmd = $chars[$i];
            $i++;
            
            while ($i < @chars) {
                $cmd .= $chars[$i];
-               $i++;
                last if ($chars[$i] eq $delimiter);
+               $i++;    # Position change January 2009
            }
 
            Handle_delimiter ($cmd);
@@ -721,10 +811,8 @@ sub Handle_2char_qx {
    
    my $ntok;
    my ($tok) = @_;
-   my $shell = 0;
    
-   # Any shell meta-characters?
-   $shell = 1 if ($tok =~ /[|><&]/);
+   #print STDERR "Handle_2char_qx token: <$tok>\n";
    
    # Simple case first
    if ($tok =~ /^\$\((.*)\)(.*)$/) {
@@ -732,7 +820,11 @@ sub Handle_2char_qx {
       my $rest = $2;
       my @cmd = split (/\s+/, $cmd);
       my @perlbi;
+      my $shell = 0;
       
+      # Any shell meta-characters?
+      $shell = 1 if ($tok =~ /[|><&]/);
+   
       if (!$shell and @perlbi = App::sh2p::Parser::get_perl_builtin($cmd[0])) {
           # Do my best to trap unnecessary child processes
           out "\n" if query_semi_colon();    # For tidy messages
@@ -743,7 +835,26 @@ sub Handle_2char_qx {
           iout "`$cmd`$rest";
       }
       else {
-          if ( $cmd =~ /\|/) {
+          my $pipe = 0;
+          
+          # Is this really a pipe, or is | embeded in a string? January 2009
+          if ( $cmd =~ /\|[^\|]/) {    # RE change 0.05
+              my $quote = 0;
+              for my $char (split '',$cmd) {
+                  
+	          if ($char eq "'" || $char eq '"') {
+	              $quote = $quote?0:1;
+	          }
+	          
+	          next if $quote;
+	          if ($char eq '|') {
+	              $pipe = 1;
+	              last;
+	          }
+              }
+          }
+          
+          if ($pipe) {
               if ( substr($tok, 0, 2) eq '$(' ) {
                   $tok =~ s/^\$\((.*)\)$/$1/;
               }
@@ -789,21 +900,20 @@ sub Handle_2char_qx {
 
 sub Handle_external {
       
-   my $ntok = 1;
+   my $ntok = 0;
    my (@args) = @_;
    my $func = 'system';
+   
+   #{local $" = '*'; print STDERR "Handle_external <@args>\n";}
    
    # Is final token a comment?
    my $last = '';
 
    if (substr($args[-1],0,1) eq '#') {
        pop @args;
-   #    $last = pop @args;
-   #    $ntok++;
    }
    
-   if ($g_unterminated_backtick) {
-   
+   if ($g_unterminated_backtick) { 
       if ($args[-1] eq ')') {
          $args[-1] = '`';
          $g_unterminated_backtick = 0; 
@@ -813,33 +923,65 @@ sub Handle_external {
       else {
          iout "@args $last";
       }
+      
+      $ntok += @args;      # January 2009
    }
    else {
       my @perlbi;
       my $user_function = 0;
       
-      #pipes?
-
-      if ( grep /\|/, @args) {
-          $ntok = App::sh2p::Parser::analyse_pipeline (@args);
-          return $ntok;
+      # pipes?
+      # This loop replaces the grep below (it was detecting | inside quotes)
+      for my $tok (@args) {
+          next if $tok =~ /^([\'\"]).*\1$/;
+          if ($tok =~ /\|[^\|]/) {    # RE change 0.05
+              $ntok = App::sh2p::Parser::analyse_pipeline (@args);
+              return $ntok;
+          }
       }
+
+      #if ( grep /\|[^\|]/, @args) {    # RE change 0.05
+      #    $ntok = App::sh2p::Parser::analyse_pipeline (@args);
+      #    return $ntok;
+      #}
+      
+      # shortcuts or break? 0.05
+      my @types  = App::sh2p::Parser::identify (1, @args);
+      my $i;
+      for ($i = 0;$i < @types; $i++) {
+          if ($types[$i][0] eq 'OPERATOR') {
+              no_semi_colon();
+              splice (@args, $i);
+              last
+          }
+          elsif ($types[$i][0] eq 'BREAK') {
+              splice (@args, $i);
+              last
+          }
+      }
+            
+      # Strip quotes January 2009
+      my $name = $args[0];
+      $name =~ s/^([\"\'])(.*)\1$/$2/;
+      #print STDERR "Handle_external: <$name>\n";
       
       # If a user function, then call it as a subroutine
-      if (is_user_function($args[0])) {
-         $func = shift @args;
+      if (is_user_function($name)) {
+         $func = $name;
+         shift @args;
          $user_function = 1;
+         $ntok++;
       }
-      elsif (@perlbi = App::sh2p::Parser::get_perl_builtin($args[0])) {
+      elsif (@perlbi = App::sh2p::Parser::get_perl_builtin($name)) {
          # Do my best to trap unnecessary child processes
          $ntok = &{$perlbi[0]}(@_);
          return $ntok;
       }
       
-      if ($args[0] eq BREAK) {
+      if (is_break($args[0])) {
           my @caller = caller();
           print STDERR "@caller\n";
-          error_out ("Invalid BREAK in Handle_external");
+          error_out ("++++ Internal error: Invalid break in Handle_external");
       }
      
       my $append = '';
@@ -891,8 +1033,6 @@ sub Handle_external {
       out "\n" if query_semi_colon();
    }
    
-   #print STDERR "external: $ntok<$last>\n";
-   
    return $ntok;
 }
 
@@ -927,14 +1067,21 @@ sub Handle_unknown {
 }
 
 ############################################################################
+sub store_subs {
+
+    my ($name, $subroutine) = @_;
+    
+    $g_subs{$name} = $subroutine;
+    
+}
 
 sub write_subs {
 
     if (%g_subs) {
-        out "\n#\n#  Subroutines added by sh2p\n#";
+        out "\n#\n#  Subroutines added by sh2p\n#\n";
     }
 
-    for my $sub (keys %g_subs) {
+    for my $sub (sort keys %g_subs) {
         out $g_subs{$sub};   
     }
 }
@@ -967,3 +1114,30 @@ AC_HERE
 ############################################################################
 
 1;
+
+__END__
+=head1 Summary
+
+package App::sh2p::Handlers;
+sub Handle_assignment
+sub Handle_list_assign
+# Bash 3.0, ksh93 array initialisation (inc. += )
+sub Handle_array_assignment
+sub Handle_break
+sub Handle_open_redirection
+sub Handle_close_redirection
+sub Query_redirection
+sub Handle_variable
+sub Handle_expansion
+sub Handle_delimiter
+sub Handle_subshell 
+sub interpolation
+sub Handle_2char_qx
+sub Handle_external
+sub Handle_Glob 
+sub Handle_unknown 
+sub write_subs 
+sub store_sh2p_array_count 
+sub sh2p_array_count 
+# Generated when ${!array[@]} is used
+=cut

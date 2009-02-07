@@ -3,10 +3,7 @@ package App::sh2p::Utils;
 use warnings;
 use strict;
 
-sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => 0x07);
-
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 require Exporter;
 our (@ISA, @EXPORT);
@@ -14,7 +11,8 @@ our (@ISA, @EXPORT);
 @EXPORT = qw (Register_variable  Register_env_variable
               Delete_variable    get_variable_type
               print_types_tokens reset_globals
-              iout               out                error_out    flush_out
+              iout    out        pre_out   error_out    flush_out
+              rd_iout rd_remove 
               get_special_var    set_special_var    can_var_interpolate
               mark_function      unmark_function    ina_function
               mark_subshell      unmark_subshell    ina_subshell
@@ -24,8 +22,10 @@ our (@ISA, @EXPORT);
               rem_empty_string   fix_print_arg
               no_semi_colon      reset_semi_colon   query_semi_colon
               set_in_quotes      unset_in_quotes    query_in_quotes
+              out_to_buffer      off_out_to_buffer
               set_shell          which_shell
-              open_out_file      close_out_file);
+              open_out_file      close_out_file
+              set_break          is_break);
 
 ############################################################################
 
@@ -39,13 +39,13 @@ my %g_special_vars = (
       'FUNCNAME' => '(caller(0))[3]',    # Corrected 0.04
       '?'        => '($? >> 8)',
       '#'        => 'scalar(@ARGV)',
-      '@'        => '@ARGV',
-      '*'        => '@ARGV',    # Should do a join with IFS
+      '@'        => '"@ARGV"',
+      '*'        => '"@ARGV"',    
       '-'        => 'not supported',
       '$'        => '$$',
       '!'        => 'not supported'
       );
-
+      
 # This hash keeps a key for each variable declared
 # so we know if to put a 'my' prefix
 my %g_variables;
@@ -66,8 +66,15 @@ my $g_shell_in_use   = "ksh";
 
 my $g_outh;
 my $g_filename;
-my $g_out_buffer;
-my $g_err_buffer;
+my $g_out_buffer;    # Main output buffer
+my $g_err_buffer;    # INSPECT messages, for output before the statement
+my $g_pre_buffer;    # For preamble, like declaring 'my' variables
+my $g_ref_redirect;  # Redirect output to buffer instead of script file
+my $g_break = \do{my $some_scalar};   # We have to define a 'break' somehow
+
+# Remember position and length for later deletion
+my $g_rd_pos = 0;
+my $g_rd_len = 0;
 
 #  For use by App::sh2p only
 ############################################################################
@@ -102,6 +109,24 @@ sub unset_in_quotes {
 
 ############################################################################
 
+sub set_break {
+
+    return $g_break
+}
+
+sub is_break {
+    my $ref = shift;
+    
+    if (defined $ref && ref($ref) && $ref eq $g_break) {
+        return 1
+    }
+    else {
+        return 0
+    }
+}
+
+############################################################################
+
 sub get_special_var {
    my ($name, $no_errors) = @_;
    my $retn;
@@ -110,9 +135,9 @@ sub get_special_var {
 
    $no_errors = 0 if ! defined $no_errors;
 
-   # Remove dollar prefix
-   $name =~ s/^\$//;
-   
+   # Remove dollar prefix and quotes
+   $name =~ s/^([\'\"]?)\$(.*?)\1/$2/;
+
    if ($name eq '0') {
        $retn = '$0';
    }
@@ -126,6 +151,13 @@ sub get_special_var {
            error_out ("Using \$PWD is unsafe: use Cwd::getcwd");
        }
        $retn = '$ENV{PWD}';
+   }
+   elsif ($name eq '*' && query_in_quotes()) {
+               
+       my $glue = $g_special_vars{'IFS'};
+       $glue =~ s/^([\"\'])(.*)\1$/$2/;
+       $glue = substr($glue,0,1);
+       $retn = "join(\"$glue\",\@ARGV)";   
    }
    else {
        $retn = $g_special_vars{$name};
@@ -143,8 +175,12 @@ sub get_special_var {
 
 sub set_special_var {
    my ($name, $value) = @_;
+   #print STDERR "set_special_var: <$name> <$value>\n";
    
-   $g_special_vars{$name} = $value;
+   # Do not set environment variables through here - January 2009
+   if (substr($g_special_vars{$name},0,4) ne '$ENV') {
+       $g_special_vars{$name} = $value;
+   }
    
    return $value;
 }
@@ -231,7 +267,16 @@ sub Register_variable {
         $type = '$'
     }
     
-    #print STDERR "Register_variable: <$name> <$type> <$level> <$subshell>\n";
+    # Remove '$' if it exists
+    $name =~ s/^\$//;
+    
+    #print STDERR "Register_variable: <$name> <$type> <$level>\n";
+    #my @caller = caller;
+    #die "@caller";
+    # January 2009
+    if (exists $g_special_vars{$name} && $name ne 'IFS') {
+        return 0;
+    }
     
     if (exists $g_variables{$name}) {
     
@@ -291,7 +336,7 @@ sub Delete_variable {
     my $level  = get_block_level();
         
     if (exists $g_variables{$name}) {
-       if ($g_variables{$name} <= $level) {
+       if ($g_variables{$name}->[0] <= $level) {    # ->[0] 0.05
            delete $g_variables{$name}
        }
     }
@@ -306,15 +351,17 @@ sub inc_block_level {
 
 sub dec_block_level {
     
-    # Remove registered variables of current block level
+    # Remove registered variables of current block level ->[0] added 0.05
     while (my($key, $value) = each (%g_variables)) {
-        delete $g_variables{$key} if $value == $g_block_level
+        delete $g_variables{$key} if $value->[0] == $g_block_level;
     }
     
     $g_block_level--;
     
     if ($g_block_level < 0) {
         print STDERR "++++ Internal Error, block level = $g_block_level\n";
+        my @caller = caller;
+        die "@caller\n";
     }
 }
 
@@ -379,6 +426,7 @@ sub open_out_file {
     
     $g_out_buffer = '';
     $g_err_buffer = '';
+    $g_pre_buffer = '';
 }
 
 sub close_out_file {
@@ -388,6 +436,35 @@ sub close_out_file {
     close ($g_outh);
     print STDERR "\n";
     $g_filename = undef;
+}
+
+#################################################################################
+# Out to remember redirection position
+sub rd_iout {
+
+    $g_rd_pos = length ($g_out_buffer);
+    iout (@_);
+    $g_rd_len = length ($g_out_buffer) - $g_rd_pos;
+}
+
+sub rd_remove {
+
+    if ($g_rd_len) {
+        $g_out_buffer = substr ($g_out_buffer, 0, $g_rd_pos) .
+                        substr ($g_out_buffer, $g_rd_pos + $g_rd_len);
+    }
+}
+
+#################################################################################
+
+sub out_to_buffer {
+    flush_out();
+    ($g_ref_redirect) = @_;
+}
+
+sub off_out_to_buffer {
+    flush_out();
+    $g_ref_redirect = undef;
 }
 
 #################################################################################
@@ -425,7 +502,7 @@ sub out {
 # I don't like these hacks, but any other way is convoluted
 sub fix_print_arg {
     # This avoids 'print (...) interpreted as function'
-    #print STDERR "rem_empty_string: <$g_out_buffer>\n";
+    #print STDERR "fix_print_arg: <$g_out_buffer>\n";
     
     if ($g_out_buffer =~ /print/) {
         $g_out_buffer =~ s/(^|[^\'\"]+)(print\s+)\(/$2\"\",(/;    
@@ -461,19 +538,50 @@ sub error_out {
     $g_errors++;
 }
 
+################################################################################
+
+sub pre_out {
+    my $msg = shift;
+    
+    if (!defined $msg) {
+        $msg = "\n";
+    }
+    
+    if (query_semi_colon()) {
+        $g_pre_buffer .= (' ' x ($g_indent * $g_indent_spacing)).$msg;
+    }
+    else {
+        $g_pre_buffer .= $msg;
+    }
+    
+}
+
 #################################################################################
 
 sub flush_out {
-     
-   print $g_outh $g_err_buffer;
-   print $g_outh $g_out_buffer;
-      
+
+   if (defined $g_ref_redirect) {
+       $$g_ref_redirect .= $g_err_buffer if $g_err_buffer;
+       $$g_ref_redirect .= $g_pre_buffer if $g_pre_buffer;
+       $$g_ref_redirect .= $g_out_buffer;
+       
+       $g_ref_redirect = undef;
+   }
+   else {
+       print $g_outh $g_err_buffer if $g_err_buffer;
+       print $g_outh $g_pre_buffer if $g_pre_buffer;
+       print $g_outh $g_out_buffer;
+   }
+   
    # Leading space for readability with multiple files
    $g_err_buffer =~ s/\#/ \#/g;
    print STDERR $g_err_buffer; 
    
    $g_out_buffer = '';
    $g_err_buffer = '';
+   $g_pre_buffer = '';
+   $g_rd_len     = 0;
+   
 }
 
 #################################################################################
@@ -486,6 +594,7 @@ sub reset_globals {
     
     $g_out_buffer     = '';
     $g_err_buffer     = '';
+    $g_pre_buffer     = '';
       
     $g_new_line       = 1;
     $g_use_semi_colon = 1;
@@ -496,6 +605,9 @@ sub reset_globals {
     $g_errors         = 0;
     $g_is_in_quotes   = 0;
     $g_shell_in_use   = "ksh";
+    
+    $g_rd_pos = 0;
+    $g_rd_len = 0;
     
 }
 
@@ -508,14 +620,19 @@ sub print_types_tokens {
     
     for (my $i = 0; $i < @$types; $i++) {
     
-        print STDERR "$caller Type: ".$types->[$i][0].", ";
-        
-        print STDERR "Token: ".$tokens->[$i]."\n";
+        if (defined $types->[$i][0]) {
+            print STDERR "$caller Type: ".$types->[$i][0].", ";
+            print STDERR "Token: ".$tokens->[$i]."\n";
+        }
+        else {
+            print STDERR "**** Type undefined for Token: <".$tokens->[$i].">\n";
+        }
     }
     
     if (@$types != @$tokens) {
         print STDERR "Types array: ".@$types.", Token array: ".@$tokens."\n";
     }
+    print STDERR "\n";
 }
 
 #################################################################################

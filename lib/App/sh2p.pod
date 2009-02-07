@@ -8,7 +8,7 @@ App::sh2p - Perl program to aid for conversion from UNIX shell to Perl
   sh2p.pl [-i] [-t] [-f] script-name output-file | script-name [...] output-directory
 
   -i Do not use integer
-  -t Generate test output.  Each line from the shelll script is written, with the prefix
+  -t Generate test output.  Each line from the shell script is written, with the prefix
      '#< ', before the converted line.  This is for testing and not recommended for general use.
   -f Clobber output files in the output directory
 
@@ -112,9 +112,14 @@ Shell functions can only return values between 0 and 255.  A common technique
 for returning a string is to 'echo' or 'print' the string to STDOUT, then
 call the function in back-ticks (or $(...)), which, in a decent shell, should
 not produce a child process.  This is inappropriate in Perl and the subroutine
-return value should be revised.  This cannot reasonably be automated.
+return value should be revised.  This cannot reasonably be automated (that is to say
+I haven't figured it out yet).
 
 =head3 Writing dir/name.here
+
+See 'Here documents' (below)
+
+=head3 Heredoc replaced by simple redirection
 
 See 'Here documents' (below)
 
@@ -122,16 +127,26 @@ See 'Here documents' (below)
 
 =head3 Pipeline detected
 
+=head3 trap signal calling sh2p_signal_handler
+
+Comment that a signal handler has been invoked.  See trap below.
+
 =head3 Subshell: subshell list
 
 Subshells should not create a child process if possible, and alterations to the environment
-should not affect the 'parent'.  Shells do that using an environment stack, I do it using 
+should not affect the 'parent'.  Shells do that using an environment stack, sh2p does it using 
 'local'.  However there are other implications, so the generated code should be inspected.
 
 =head3 Using $PWD is unsafe: use Cwd::getcwd
 
 The environment variable PWD is set when the shell built-in 'cd' is called.
-The variable is only used by the shell and not reliable in any other language.
+This variable is only used by the shell and not reliable in any other language.
+
+=head2 Unitialised variable
+
+The shell defaults uninitialised variables to an empty string or zero.  The conversion
+does not emulate this, but leaves them as undef.  The rational is that unitialised
+variables are undesirable and should be fixed.
 
 =head2 Here documents
 
@@ -142,7 +157,9 @@ If that is not set then the current directory is used.
 
 The heredoc data is extracted from the script and written to a file named
 label.here, where 'label' is the label used to identify the heredoc.
-The file is read by subroutines appended to the generated script.
+With the 'read' command, the file is read by subroutines appended to the generated script.
+
+With heredoc's from builtins, we attempt to use simple redirection but manual intervention is required.
 
 Currently external programs reading from a heredoc require manual intervention.
 Heredocs embedded inside back-ticks (or $(..)) produce a mess (some shells have 
@@ -161,6 +178,9 @@ These will generally be seen as unknown commands and default to an external prog
 called using system or back-ticks.  However they may be declared in your script 
 using 'autoload' (or 'typedef -fu'), which will register them as functions with sh2p.
 
+A function name embedded in a variable and then called using that variable will not
+be detected as such and will be treated as an external command.
+
 The 'functions' alias, and 'typedef -f', will generate code to give a list of the 
 subroutines in the main:: namespace (symbol table) at runtime.  This will include any 
 imported names from external modules, and is unconnected with those known at conversion time.
@@ -172,20 +192,22 @@ The Bash specific variable FUNCNAME is converted to 'caller(0))[3]'.
 
 There are two different syntax conventions commonly used with functions:
 
-    name () { ... }         # Bourne shell syntax
-    function name { ... }   # Korn shell syntax
+    name () { ... }         # POSIX (Bourne) syntax
+    function name { ... }   # non-POSIX (Korn) syntax
 
 Bash and Korn shells support both, however they differ in operation when it comes to variable scope.  
-As an extension to the POSIX (and Bourne) standard, Bash and Korn shells allow local
+As an extension to the POSIX standard, Bash and Korn shells allow local
 variables to be declared using typeset, declare (Bash), or local.  This is mirrored in
 Perl by the 'my' perfix.  Any variables not so declared are globals.
 
-However there are issues with this.  Bourne/POSIX never supported this, so strictly the Bourne
+However there are issues with this.  POSIX never supported this, so the POSIX
 shell syntax should not support it either.  Both Bash and ksh88 (the most common) do support the
 declaration of local variables in both forms of syntax.  Ksh93 "fixed" it by not supporting it 
-in the Bourne syntax ('typedef var' has no effect), but supporting it in the Korn shell syntax only.
+in the Bourne syntax ('typedef var' has no effect), but supporting it in the non-POSIX shell syntax only.
 
 Added to that, very few people know about the capability anyway!
+
+A similar mix exists when dealing with signal handling and the 'trap' command.
 
 =head2 Variable scope
 
@@ -194,9 +216,44 @@ The current state of block nesting is tracked, so the definition of a "new" vari
 has not been declared in this, or a higher-level, block.  This can be problematic if a variable is 
 used for the first time in an inner block.
 
+For example:
+    case "$1" in
+    --new)
+    	NEW=1
+    	;;
+    --update)
+    	NEW=0
+    	;;
+    *)
+    	echo "Usage: $0 --new|--update config-file"
+    	exit 1
+    	;;
+    esac
+    
+gets converted to:
+    $_ = "$ARGV[0]";
+    SWITCH: {
+        /^--new$/ && do {
+            my $NEW = 1;
+            last SWITCH;
+        };
+        /^--update$/ && do {
+            my $NEW = 0;
+            last SWITCH;
+        };
+        /^.*$/ && do {
+            print "Usage: $0 --new|--update config-file\n";
+            exit (1);
+            last SWITCH;
+        };
+    
+    }
+
+To avoid this problem, predefine the variable in the shell script using typeset.
+
 At runtime, the shell checks the environment block for variables before creating its own.
-That behaviour could be converted, but would impose a considerable overhead.  Therefore
-the environment block is not consulted.
+That behaviour could be converted, but would impose a considerable overhead.  
+Therefore the environment block is not consulted.
 
 =head2 Redirection
 
@@ -229,6 +286,18 @@ It is intended to implement a second pass in a future release.
 
 The assumption is made that the variable is a scalar
 
+=head3 trap
+
+Korn and Bash shell 'trap' commands are converted to Perl %SIG signal handling where possible.
+Pseudo signal EXIT is not supported within a function, and pseudo signal ERR is
+only supported within a function.  The reason for these restrictions is that shells vary in their
+support of signals inside functions, with Bash, ksh93, and Sun's version of ksh88 all taking
+different actions, with differences between POSIX and non-POSIX function syntax (see above).
+Pseudo signals ERR, DEBUG, and RETURN (from Bash 3), are not supported.  Other signals
+are supported by appending handler subroutines to the script.  Currently only one handler
+subroutine for each signal is supported.  This restriction does not apply to '' (IGNORE)
+and '-' (DEFAULT), since subroutines are not required.
+
 =head3 Currently unsupported :
 
    File descriptors (exec, read -u, print -u, some redirection)
@@ -257,10 +326,8 @@ The assumption is made that the variable is a scalar
                  pwd      
                  readonly     
                  time     
-                 times    
-                 trap       
+                 times           
                  ulimit   
-                 umask    
                  unalias   
                  wait     
                  whence   
@@ -271,13 +338,40 @@ The following compound statements are currently unsupported:
 
 The following operators are currently unsupported:
                 |&
-                 &
+                 & - this is generally placed at the end of a system command
 
+=head1 FAQ
 
+=head2 Why do my strings have an empty string prefix?
+
+First the Perl 'print' command.  For precedence reasons we often convert to 
+strings that are enclosed in parentheses.  The Perl 'print' command often 
+issues the message 'print (...) interpreted as function' when this is done.
+A fix is to prefix the parentheses with an empty string.
+    
+Another reason is the use of braces with a variable name, for example ${var}.
+While this can be interpolated cleanly by Perl as it stands, braces in a shell
+can also imply expansions, for example ${var%%value*}.  These expansions often
+generate more complex Perl that cannot be interpolated.  The safe path taken
+is that all variables in braces potentially contain expansions.
+    
+Some cleaning-up is done in certain cases where possible, but not all.
+    
+=head2 Why does tr [A-Z] [a-z] get converted to use glob?
+
+Because it should be tr '[A-Z]' '[a-z]'.  The reason it usually works in the shell is because
+you don't normally have file names in the current directory consisting of just one
+alphabetic character.  Most shells treat unsatisfied glob constructs as literals.
+I can't do that, because I don't know what the runtime environment is.
+
+=head2 Why don't environment variables get defined.
+
+Because we have no idea what the runtime envionment is - they might have values
+at runtime.
 
 =head1 SEE ALSO
 
-
+man pages for sh, ksh, and bash
 
 =head1 AUTHOR
 
@@ -285,7 +379,7 @@ Clive Darke, E<lt>clive.darke@talk21.comE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2008 by C.B.Darke
+Copyright (C) 2008, 2009 by C.B.Darke
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.0 or,

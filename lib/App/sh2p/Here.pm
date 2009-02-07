@@ -22,7 +22,7 @@ use Scalar::Util qw(refaddr);
 
 use App::sh2p::Utils;
 
-our $VERSION = '0.03';
+our $VERSION = '0.05';
 
 #################################################################################
 
@@ -30,7 +30,8 @@ my %handle;
 my %name;
 my %access;
 
-my $g_last_opened_name;
+my $g_last_opened_here_name;
+my $g_last_opened_file_name;
 my $g_write_subroutines = 0;
 
 #################################################################################
@@ -40,11 +41,30 @@ sub store_sh2p_here_subs {
 }
 
 #################################################################################
+# January 2009
+sub abandon_sh2p_here_subs {
+    $g_write_subroutines = 0;
+}
+
+#################################################################################
 
 sub get_last_here_doc {
 
-   my $name = $g_last_opened_name;
-   $g_last_opened_name = undef;
+   my $name = $g_last_opened_here_name;
+   $g_last_opened_here_name = undef;
+   return $name
+
+}
+
+#################################################################################
+
+sub get_last_file_name {
+
+   my @caller = caller();
+   print STDERR "get_last_file_name: <$g_last_opened_file_name> @caller\n";
+
+   my $name = $g_last_opened_file_name;
+   $g_last_opened_file_name = undef;
    return $name
 
 }
@@ -65,6 +85,15 @@ sub _get_dir {
 
 #################################################################################
 
+sub gen_filename {
+   my $name = shift;
+   my $dir  = _get_dir();
+   
+   return "$dir/$name.here";
+}
+
+#################################################################################
+
 sub open {
    my ($class, $name, $access) = @_;
    
@@ -74,13 +103,30 @@ sub open {
    $name  {$key} = $name;
    $access{$key} = $access;
    
-   my $dir = _get_dir();
-   $g_last_opened_name = $name;
+   $g_last_opened_here_name = $name;
+   my $full_name = gen_filename($name);
    
-   error_out ("Writing $dir/$name.here");
-   open ($handle{$key}, $access{$key}, "$dir/$name.here") ||
-        carp "Unable to open $dir/$name.here: $!\n";
+   error_out ("Writing $full_name");
+   open ($handle{$key}, $access{$key}, "$full_name") ||
+        carp "Unable to open $full_name: $!\n";
    
+   $g_write_subroutines = 1;
+   
+   return $this 
+}
+
+#################################################################################
+
+sub open_rd {
+   my ($class, $filename, $access) = @_;
+   
+   my $this = bless \do{my $some_scalar}, $class;
+   my $key = refaddr $this;
+   
+   $name  {$key} = $filename;
+   $access{$key} = $access;
+   
+   $g_last_opened_file_name = $filename;
    $g_write_subroutines = 1;
    
    return $this 
@@ -157,10 +203,12 @@ sub write_here_subs {
 	
 sub sh2p_read_from_handle {
 
-   my ($handle, $IFS, $prompt, @refs) = @_;
+   my ($handle, $sh2p_IFS, $prompt, @refs) = @_;
    
-   if (!defined $IFS) {
-      $IFS = " \t\n";
+   return 0 if eof($handle);
+   
+   if (!defined $sh2p_IFS) {
+      $sh2p_IFS = " \t\n";
    }
    
    if (defined $prompt) {
@@ -168,11 +216,11 @@ sub sh2p_read_from_handle {
    }
    
    my $line = <$handle>;
-   my $REPLY;
+   my $sh2p_REPLY;
    
    chomp $line;
    
-   my (@vars) = split /[$IFS]+/, $line;
+   my (@vars) = split /[$sh2p_IFS]+/, $line;
    my $i;
    
    # Assign values to variables
@@ -186,18 +234,17 @@ sub sh2p_read_from_handle {
    }
    
    # If not enough variables supplied
-   if ($i < $#vars || !@refs) {
-      my $IFS1st = substr($IFS,0,1);
-      $REPLY = join $IFS1st, @vars[$i..$#vars];
+   if ($i < @vars || !@refs) {
+      my $IFS1st = substr($sh2p_IFS,0,1);
+      $sh2p_REPLY = join $IFS1st, @vars[$i..$#vars];
    }
 
-   if (@refs > 0 && defined $REPLY) {
+   if (@refs > 0 && defined $sh2p_REPLY) {
       # Concat extra values onto the element
       ${$refs[-1]} .= " $REPLY";
-      $REPLY = ''
    }
    
-   return $REPLY
+   return 1;
 }
 
 ######################################################
@@ -210,15 +257,28 @@ sub sh2p_read_from_stdin {
 }
 
 ######################################################
+{
+# No 'state' variables in 5.8
+my $handle;
 
-sub sh2p_read_from_here {
+   sub sh2p_read_from_file {
 
-   my ($filename, @args) = @_;
+      my ($filename, @args) = @_;
 
-   open (my $handle, '<', $filename) or 
-         die "Unable to open $filename: $!";
+      if (!defined $handle) {
+          open ($handle, '<', $filename) or 
+              die "Unable to open $filename: $!";
+      }
    
-   return sh2p_read_from_handle ($handle, @args);
+      my $retn = sh2p_read_from_handle ($handle, @args);
+      if (!$retn) {
+          close $handle;
+          undef $handle;
+      }
+      
+      return $retn;
+   }
+
 }
 
 ######################################################

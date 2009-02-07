@@ -1,4 +1,4 @@
-App-sh2p version 0.03
+App-sh2p version 0.05
 =====================
 
 This Perl script, and associated modules in the sh2p directory, 
@@ -13,10 +13,10 @@ feedback will be welcome and should be sent to CLIVE@cpan.org.
 
 SYNOPSIS
 
-  sh2p.pl [-i] [-r] [-f] script-name output-file | script-name [...] output-directory
+  sh2p.pl [-i] [-t] [-f] script-name output-file | script-name [...] output-directory
 
 -i Do not use integer
--r Do not use runtime
+-t Generate additional output for testing (not recommended)
 -f Clobber output files in the output directory
 
 This Perl script, and associated modules in the sh2p directory, 

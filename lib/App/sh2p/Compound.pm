@@ -4,11 +4,10 @@ use strict;
 use App::sh2p::Parser;
 use App::sh2p::Utils;
 use App::sh2p::Handlers;
+use App::sh2p::Trap;
 
-sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => 0x07);
-
-our $VERSION = '0.04';
+sub App::sh2p::Parser::convert(\@\@);
+our $VERSION = '0.05';
 
 my $g_not = 0;
 my $g_context = '';
@@ -189,6 +188,12 @@ sub ksh_test {
 	 elsif ($token eq '!') {
 	     $g_not = 1;
 	 }
+	 elsif ($types[$i][0] eq 'VARIABLE') {      # January 2009
+	     if (Register_variable($token, '$')) {
+	         pre_out "my $token;\n";
+	     } 
+	 }
+
       }
 
    }
@@ -260,7 +265,7 @@ sub sh_test {
       my $i;
       for ($i = 0; $i < @rest; $i++) {
           
-          last if $rest[$i] eq BREAK || $rest[$i] eq ';';
+          last if is_break($rest[$i]) || $rest[$i] eq ';';
       }
       
       if ( $i ) {      
@@ -302,6 +307,11 @@ sub sh_test {
 	 elsif ($tokens[$i] eq '!') {
 	     $g_not = 1;
 	 }
+	 elsif ($types[$i][0] eq 'VARIABLE') {      # January 2009
+	     if (Register_variable($tokens[$i], '$')) {
+	         pre_out "my $tokens[$i];\n";
+	     }
+	 }
       }
    }
   
@@ -313,6 +323,7 @@ sub sh_test {
        out '( ';   
    }
    
+   #print_types_tokens (\@types, \@tokens);
    App::sh2p::Parser::convert (@tokens, @types);
 
    out ' )';
@@ -347,11 +358,14 @@ sub Handle_if {
 
    my ($cmd, @statements) = @_;
    my $ntok = 1;
-   
+
    $g_context = 'if';
-   
-   if (substr($statements[-1],0,1) eq '#') {
-       pop @statements;
+
+   for (my $i=0; $i < @statements; $i++) {
+       if (substr($statements[$i],0,1) eq '#') {
+           splice (@statements, $i);
+           last;
+       }
    }
    
    # First token is 'if'
@@ -363,6 +377,7 @@ sub Handle_if {
    }
    
    $g_context = '';
+
    return $ntok;
 }
 
@@ -392,8 +407,11 @@ sub Handle_then {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
 
-   if (substr($statements[-1],0,1) eq '#') {
-       pop @statements;
+   for (my $i=0; $i < @statements; $i++) {
+       if (substr($statements[$i],0,1) eq '#') {
+           splice (@statements, $i);
+           last;
+       }
    }
   
    iout "{\n";
@@ -414,8 +432,11 @@ sub Handle_else {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
 
-   if (substr($statements[-1],0,1) eq '#') {
-       pop @statements;
+   for (my $i=0; $i < @statements; $i++) {
+       if (substr($statements[$i],0,1) eq '#') {
+           splice (@statements, $i);
+           last;
+       }
    }
 
    dec_indent();
@@ -443,8 +464,11 @@ sub Handle_elif {
    my ($cmd, @statements) = @_;
    my $ntok = 1;
 
-   if (substr($statements[-1],0,1) eq '#') {
-       pop @statements;
+   for (my $i=0; $i < @statements; $i++) {
+       if (substr($statements[$i],0,1) eq '#') {
+           splice (@statements, $i);
+           last;
+       }
    }
 
    dec_indent(); 
@@ -517,9 +541,9 @@ sub glob2pat {
 #####################################################
 
 sub push_case {
-
-    push @g_case_statements, @_;
-
+    
+    push @g_case_statements, @_, set_break();  # 0.05 added break
+    
 }
 
 #####################################################
@@ -527,12 +551,14 @@ sub push_case {
 sub Handle_case {
 
     my ($cmd, $var, $in, @rest) = @_;
-    my $ntok = 2;
+    my $ntok = 3;
+
+    #print STDERR "Handle_case <$cmd> <$var> <$in> <@rest>\n";
     
     $g_context = 'case';
     
     if ($in ne 'in') {
-        error_out ("Expected 'in', got $in");
+        error_out ("Expected 'in', got <$in> ");
     }
 
     iout '$_ = ';
@@ -541,12 +567,26 @@ sub Handle_case {
         
     iout "SWITCH: {\n";
 
+    # These are decremented in Handle_esac
     inc_indent();
     inc_block_level();
     
-    for (my $i; $i < @rest; $i++) {
+    my $i;
+    
+    for ($i = 0; $i < @rest; $i++) {
 
         my $condition = $rest[$i];
+        next if is_break($condition);      # 0.05
+        
+        # January 2009 for case nested in other conditionals
+        if ($condition eq 'esac') {
+            dec_indent();
+            dec_block_level();
+            iout "}\n";
+            $i++;
+            last;
+        }
+        
         $condition =~ s/^\(?(.*)\)$/$1/;
         $condition = glob2pat ($condition);
         iout ("/$condition/ && do {\n");
@@ -557,6 +597,7 @@ sub Handle_case {
         
         for ( $i++; $i < @rest; $i++) {
             push @tokens,$rest[$i]; 
+            
             if ($rest[$i] eq ';' && $rest[$i+1] eq ';') {
                 $i++;
                 last;
@@ -564,14 +605,19 @@ sub Handle_case {
         }
         
         my @types  = App::sh2p::Parser::identify (0, @tokens);	
+        
+        #print_types_tokens(\@types, \@tokens);
+        
 	App::sh2p::Parser::convert (@tokens, @types);
         
         iout ("last SWITCH;\n");
         dec_indent();
         dec_block_level();
-        iout ("}\n");
+        iout ("};\n");      # Added ';' 0.05
     }
     
+    $ntok = $ntok + $i;     # January 2009
+ 
     $g_context = '';
     
     return $ntok;
@@ -583,13 +629,17 @@ sub Handle_esac {
 
     my ($cmd) = @_;
 
+    #print STDERR "Handle_esac\n";
+    
     Handle_case (@g_case_statements);
 
     dec_indent();
     dec_block_level();
     @g_case_statements = ();
     
-    iout "\n}\n";
+    # Fix January 2009 (was: iout "\n}\n")
+    out "\n";
+    iout "}\n";
     
     return 1;
 }
@@ -602,26 +652,33 @@ sub Handle_for {
    my ($cmd, $var, $in, @list) = @_;
    
    $g_context = 'for';
-   
-   my $ntok = @_;
-   if (substr(0,1,$list[-1]) eq '#') {
-      $ntok--;
-      pop @list;
-   }
-   
+
+   my $ntok = 1;
+      
    # Using first argument because this is also used for select (temp)
    error_out ("No conversion for $cmd, consider Shell::POSIX::select") if $cmd eq 'select';
+   
+   $ntok++ if defined $var;
    iout "$cmd my \$$var (";
    
+   $ntok++ if defined $in;
+   
    my @for_tokens;
-   my $i;
+
    for (my $i=0; $i < @list; $i++) {
        last if $list[$i] eq 'do';
+       last if $list[$i] eq ';';
+       last if substr($list[$i],0,1) eq '#';
+       
+       push @for_tokens, $list[$i]; 
    }
    
-   @for_tokens = splice (@list, 0, $i+1);
+   #print STDERR "Handle_for: for_tokens <@for_tokens>\n";
    
-   if (!@for_tokens) {
+   if (@for_tokens) {
+       $ntok += @for_tokens;
+   }
+   else {
        if (ina_function()) {
            out '@_';
        }
@@ -632,7 +689,7 @@ sub Handle_for {
    
    # Often a variable to be converted to a list
    # Note: excludes @ and * which indicate an array
-   if ($for_tokens[0] =~ /\$[A-Z0-9#{}\[\]]+/i) {
+   if ($for_tokens[0] =~ /\$[A-Z0-9#\{\}\[\]]+/i) {
       my $IFS = App::sh2p::Utils::get_special_var('IFS',0);
       $IFS =~ s/^"(.*)"/$1/;
       out "split /$IFS/,$for_tokens[0]";
@@ -646,9 +703,6 @@ sub Handle_for {
    
    out ')';
    
-   my @types  = App::sh2p::Parser::identify (2, @list);
-   App::sh2p::Parser::convert (@list, @types); 
-
    $g_context = '';
 
    return $ntok;
@@ -660,10 +714,15 @@ sub Handle_while {
 
    my ($cmd, @statements) = @_;
    my $ntok = 1;
-
-   if (substr($statements[-1],0,1) eq '#') {
-       pop @statements;
+   
+   for (my $i=0; $i < @statements; $i++) {
+       if (substr($statements[$i],0,1) eq '#') {
+           splice (@statements, $i);
+           last;
+       }
    }
+   
+   #print STDERR "Handle_while: <@statements>\n";
    
    # First token is 'while'
    iout "$cmd ";
@@ -763,6 +822,10 @@ sub open_brace {
 
 sub close_brace {
 
+   # Support for trap January 2009
+   
+   App::sh2p::Trap::uninstall_function_traps();
+   
    dec_indent();
    iout "\n}\n";
 
@@ -790,11 +853,11 @@ sub process_second_statement {
    
    for ($i = 0; $i < @statements; $i++) {
        
-       if ($statements[$i] eq BREAK || $statements[$i] eq ';') {
+       if (is_break($statements[$i]) || $statements[$i] eq ';') {
            last;
        }
    }
-   
+
    return 0 unless $i > 0;
    
    $statement = join (' ', splice(@statements,0,$i));

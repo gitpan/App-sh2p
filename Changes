@@ -44,7 +44,7 @@ Revision history for Perl extension App::sh2p.
 	- fixed bug concerning comment after redirection
 	- fixed bug when testing the 'system' command - now test explictly for zero return.
 	- fixed bug where a user function call with no arguments gave a single double-quote.
-0.04  Fri Sep 20 17:00:00 2008
+0.04  Wed Oct 06 17:00:00 2008
 	- removed the Runtime module and the -r option
 	- added -t option for test output (not for general use)
 	- heredoc subroutines are now appended as required
@@ -66,5 +66,31 @@ Revision history for Perl extension App::sh2p.
 	- fixed bug where some INSPECT messages could be displayed several times 
 	  for each occurence
 	- Improved error reporting
-
-
+0.05  Sat Feb 07 17:00:00 2009
+	- new modules: Trap.pm, Statement.pm
+	- internal structure changes concerning BREAK markers (which fixed '7' bugs)
+	- fixed bugs concerning shortcuts (|| and &&) following external calls and print/echo 
+	- fixed bug in Builtins.pm (do_print) where a variable was declared twice
+	- fixed bug in case statements where the do{} block was not terminated with ;
+	- fixed bug in case statement where statements were concatenated
+	- fixed bug with case statement nested inside other conditional
+	- fixed indentation with trailing } in esac
+	- fixed bug in 'let' where variable omitted sigil
+	- fixed bug where 'if' statements were sometimes unterminated
+	- fixed bug where an uninitialised array index was not declared with 'my'
+	- fixed bug in subshells where new variables were not declared in the correct scope
+	- fixed bugs where empty strings "" were handled incorrectly
+	- fixed bug with back-ticks embedded inside " quotes
+	- fixed bug where command name was a variable inside "
+	- fixed bug with -t option handling of multi-line commands
+	- fixed bug concerning declare/typeset and "Token count wrong!" 
+	- fixed bug where a | embedded in a string was seen as a pipe
+	- fixed bugs concerning commands embedded in quotes
+	- conversion of advise command in back-ticks changed to be a concat. string
+	- support for trap - see documentation for restrictions 
+	- the & operator (run in background) is now placed inside a system call.
+	- improvements to 'here' document handling
+	- improvements to $* handling
+	- improvements to redirection
+	- improvements to testing, including the provision of main()
+	

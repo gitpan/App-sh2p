@@ -1,12 +1,14 @@
 #!/usr/bin/perl
 # Clive Darke 2006
-# Additional modifications 2008
+# Additional modifications 2008. See Changes file
 
 use warnings;
 use strict;
 use Getopt::Std;
 use File::Basename;
 use Config;
+
+use App::sh2p::Statement;
 
 use App::sh2p::Parser;
 use App::sh2p::Handlers;
@@ -15,10 +17,8 @@ use App::sh2p::Operators;
 use App::sh2p::Compound;
 use App::sh2p::Here;
 use App::sh2p::Utils;
-use constant (BREAK => 0x07);
 
-sub process_script (\@);
-sub convert (\@\@);           
+sub process_script (\@);          
 
 my %g_block_commands = ('while'  => 'done',
                         'until'  => 'done',
@@ -33,7 +33,7 @@ my $g_integer = 1;
 my $g_clobber = 0;
 my $g_display = 0;
 
-our $VERSION = 0.04;
+our $VERSION = 0.05;
 our $DEBUG   = 0;
 
 ###########################################################
@@ -159,6 +159,9 @@ sub pre_process
                     if ($line =~ s/\s+(#.*)$//) {
                         $comments .= " $1";
                     }
+                  
+                    # February 2009 substitute line continuation with "\n"
+                    $line =~ s/\\$/\n/;           
                     
                     $i++;
                     
@@ -170,11 +173,15 @@ sub pre_process
                     last if index($in_lines[$i],$delimiters{$delim}) > -1;
                 }
                 
-                splice (@out_lines, $line_pos, 0, $comments);
+                # February 2009 (if)
+                if ( $comments ) {
+                    splice (@out_lines, $line_pos, 0, $comments);
+                }
             }
         }
 
         push @out_lines, $line;
+        #{local $" = '|'; print STDERR "out_lines: <@out_lines>\n\n";}
 
     }
 
@@ -188,11 +195,12 @@ sub process_script (\@)
    my ($ref) = @_;
    my $index = 0;
    my $limit = @$ref;
-   my $line;
+   my $line  = '';
    my $delimiter = ';';
    my $here_label;
    my $here;
-   my @statement_tokens;
+   my $redirection_file;
+   my $statement = undef;
   
    # Maybe make this optional?
    if ( $ref->[0] =~ /^#!/ ) {
@@ -212,7 +220,7 @@ sub process_script (\@)
    out "use integer;\n" if $g_integer;
    out "\n";
    flush_out ();
-    
+   
    # A foreach loop would be too simplistic
    OUTER:
    while ($index < $limit) {
@@ -235,9 +243,9 @@ sub process_script (\@)
       
       if ( substr($line,-1) eq '\\' ) {
          # Continuation character
-         substr($line,-1) = "\n";
+         substr($line,-1) = "\n";      
          next;
-      }
+      }    
       
       if ($line) {
          
@@ -249,7 +257,14 @@ sub process_script (\@)
          
          # Option -t (testing) - ignore comment lines
          if ($g_display  && $line !~ /^\s*#/) {
-             out ("#< $line\n");
+             # convert newlines - for line continuation (January 2009)
+             my $out_line = $line;
+             $out_line =~ s/\n/\n#< /g;
+             out ("#< $out_line\n");
+         }
+         
+         if (! defined $statement) {
+             $statement = new App::sh2p::Statement();
          }
          
          # Hack for here-docs
@@ -263,7 +278,7 @@ sub process_script (\@)
                # push line into here doc
                $here->write($line);            
             }
-            $line = undef;
+            $line = '';
             next
          }
          
@@ -281,12 +296,21 @@ sub process_script (\@)
          for (my $i = 0; $i < @tokens; $i++) {
          
             my $tok = $tokens[$i];
+            #print STDERR "Processing token: <$tok>\n";
             
             # This check is to 'read-ahead' looking for redirection
-            if (exists $g_block_commands{$tok}) {
+            # $delimiter test added January 2009 for nested conditionals
+            if (exists $g_block_commands{$tok} && $delimiter eq ';') {
+               # print STDERR "Delimiter switched from <$delimiter> to <$g_block_commands{$tok}>\n";
                $delimiter = $g_block_commands{$tok};
             }
             
+            # Look ahead to check for redirection
+            # Currently only 'here' documents
+            
+            # We need the code here twice, since redirections
+            # also occur AFTER a while loop, if statement, or function
+            # This one handles redirection on the statement
             if ($tok eq '<<') {
                 $i += 1;
                 if ( !defined $tokens[$i] ) {
@@ -296,13 +320,25 @@ sub process_script (\@)
                 $here_label =~ s/^\s+//;
                 $here = App::sh2p::Here->open($here_label, '>');
             }
-            
+            # This is no good for built-ins and externals
+            #elsif ($tok eq '<' || $tok eq '>' || $tok eq '>>') {     
+            #    $i += 1;
+            #    if ( !defined $tokens[$i] ) {
+            #        die "*** Malformed redirection (no file) line ",$index + 1,"\n";
+            #    }
+            #    $redirection_file = $tokens[$i];
+            #    $redirection_file =~ s/^\s+//; 
+            #    App::sh2p::Handlers::Handle_open_redirection ($tok, $redirection_file);
+            #    next;
+            #}
+
             if ($tok eq $delimiter) {
-               # Look ahead to check for redirection
-               # Currently only 'here' documents
+               # We need the code here twice, since redirections
+	       # also occur AFTER a while loop, if statement, or function
+               # This one handles redirection AFTER the statement
+               if ( defined $tokens[$i+1] && $tokens[$i+1] eq '<<' ) { 
                
-               if ( defined $tokens[$i+1] && $tokens[$i+1] eq '<<' ) {   
-                  push @statement_tokens, $tok;
+                  $statement->add_token ($tok);
                
                   $i += 2;
                   if ( !defined $tokens[$i] ) {
@@ -312,51 +348,71 @@ sub process_script (\@)
                   $here_label =~ s/^\s+//;
                   $here = App::sh2p::Here->open($here_label, '>');
                }
-               elsif ($tok ne ';' && $tok ne BREAK) {
-                  push @statement_tokens, $tok;
+               elsif (defined $tokens[$i+1] &&        # ADDED 11/11/2008
+                     ($tokens[$i+1] eq '<' || 
+                      $tokens[$i+1] eq '>' ||
+                      $tokens[$i+1] eq '>>')) { 
+                  
+                  $statement->add_token ($tok);
+                  
+                  my $access = $tokens[$i+1];
+                  $i += 2;
+                  if ( !defined $tokens[$i] ) {
+                      die "*** Malformed redirection (no file) line ",$index + 1,"\n";
+                  }
+                  $redirection_file = $tokens[$i];
+                  $redirection_file =~ s/^\s+//; 
+                  App::sh2p::Handlers::Handle_open_redirection ($access, $redirection_file);
+                  $statement->add_token (\&App::sh2p::Handlers::Handle_close_redirection);
+               }
+               #elsif ($tok ne ';' && $tok ne BREAK) {
+               elsif ($tok ne ';') {
+                  $statement->add_token ($tok);
                }
                
                # Process statements 
-               if (@statement_tokens) {
-                  my @types  = App::sh2p::Parser::identify (0, @statement_tokens);
-                  App::sh2p::Parser::convert (@statement_tokens, @types);
-                  @statement_tokens = ();
+               if (defined $statement) {
+                  $statement->identify_tokens(0);
+                  $statement->convert_tokens();
+                 
+                  undef $statement;
                }
+               
                $delimiter = ';';
             } 
-            else {
+            elsif (defined $statement) {
                # Inside a while, until, for, if, or case
-               push @statement_tokens, $tok;
+               # print STDERR "statement <$tok> added\n";
+               $statement->add_token ($tok);
+            }
+            else {
+               # statements after ;
+               $statement = new App::sh2p::Statement();
+               $statement->add_token ($tok);
             }
          }
          
-         if (@statement_tokens && 
-               ($delimiter eq ';'    || 
-                $delimiter eq 'fi'   || 
-                $delimiter eq 'done' )
-             ) {
-            my @types  = App::sh2p::Parser::identify (0, @statement_tokens);
-            
-            #print_types_tokens (\@types, \@statement_tokens);
-            
-            App::sh2p::Parser::convert (@statement_tokens, @types);
-            @statement_tokens = ();
+         # 0.05
+         if (defined $statement && $delimiter eq ';' ) {
+            $statement->identify_tokens(0);
+            $statement->convert_tokens();
+            $statement = undef;
          }
          elsif ($delimiter eq 'esac') {
-               App::sh2p::Compound::push_case (@statement_tokens);
-               @statement_tokens = ();
+               $statement->push_case();
+               $statement = undef;
          }
-         else {
-            push @statement_tokens, BREAK
+         elsif (defined $statement) {
+            $statement->add_break ();
          }
-
+         
       }
       
       # At end
-      
+
       flush_out ();
       
-      $line = undef;
+      $line = '';
    }
    
    App::sh2p::Handlers::write_subs();
@@ -374,19 +430,28 @@ sub usage {
 
 ###########################################################
 # main
-my %args;
+# done this way to aid testing 
+# see "Perl Testing, A Developer's Notebook" by Ian Langworth & chromatic (O'Reilly)
 
-getopts ('ift', \%args);
-$g_integer = 0 if exists $args{'i'};
-$g_clobber = 1 if exists $args{'f'};
-$g_display = 1 if exists $args{'t'};
+main(@ARGV) unless caller();
 
-if ( @ARGV < 2 ) {
-   usage();
-}
+sub main
+{
+    my %args;
+
+    getopts ('ift', \%args);
+    $g_integer = 0 if exists $args{'i'};
+    $g_clobber = 1 if exists $args{'f'};
+    $g_display = 1 if exists $args{'t'};
+
+    if ( @ARGV < 2 ) {
+        usage();
+    }
     
-outer(@ARGV);
+    outer(@ARGV);
+}
 
 __END__
 
 ####################################################
+# POD is in sh2p.pod

@@ -1,13 +1,15 @@
 package App::sh2p::Parser;
 
 use strict;
+use warnings;
+
 use App::sh2p::Compound;
+use App::sh2p::Trap;
 use App::sh2p::Utils;
 
-sub App::sh2p::Parser::convert (\@\@);
-use constant (BREAK => 0x07);
+sub convert(\@\@);
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 our $DEBUG   = 0;
 
 ###########################################################
@@ -38,7 +40,7 @@ my %ioperator =
                ( '&&' => \&App::sh2p::Operators::shortcut,
                  '||' => \&App::sh2p::Operators::shortcut,
                  '|&' => 3,
-                 '&'  => 4,
+                 #'&'  => 4,      January 2009
                  );
                 
 my %idelimiter =
@@ -52,7 +54,7 @@ my %idelimiter =
                  '['   => \&App::sh2p::Compound::sh_test,
                  '#'   => \&App::sh2p::Handlers::Handle_delimiter,   # 'COMMENT',
                  ';'   => \&App::sh2p::Handlers::Handle_delimiter,
-                 '|'   => \&App::sh2p::Handlers::Handle_delimiter,
+                 '|'   => \&App::sh2p::Handlers::Handle_pipe,
                  '[['  => \&App::sh2p::Compound::ksh_test,
                  '(('  => \&App::sh2p::Compound::arith,
                  '$((' => \&App::sh2p::Compound::arith,
@@ -86,7 +88,6 @@ my %ibuiltins =
                  'kill'     => \&App::sh2p::Builtins::do_kill,
                  'let'      => \&App::sh2p::Builtins::do_let,
                  'print'    => \&App::sh2p::Builtins::do_print,
-                 'pwd'      => 5,
                  'read'     => \&App::sh2p::Builtins::do_read,
                  'readonly' => 7,
                  'return'   => \&App::sh2p::Builtins::do_return,
@@ -97,7 +98,7 @@ my %ibuiltins =
                  'time'     => 12,
                  'times'    => 13,
                  'tr'       => \&App::sh2p::Builtins::do_tr,
-                 'trap'     => 14,
+                 'trap'     => \&App::sh2p::Trap::do_trap,
                  'true'     => \&App::sh2p::Builtins::do_true,
                  'typeset'  => \&App::sh2p::Builtins::do_typeset,
                  'ulimit'   => 17,
@@ -274,19 +275,25 @@ sub tokenise {
            $tokens[$index] .= $char;
            $index++;
          }
-         elsif ($char eq '<' && !$comment) {     
-           if ($tokens[$index] ne '<') {          # Here doc? 
-              $index++ if defined $tokens[$index];
-              $tokens[$index] .= $char;
-           }
-           else {
-              $heredoc = 1;
-              $tokens[$index] .= $char;
-              $index++;
-           }
+         elsif ($char eq '<' && !$comment) {
+              # Here doc? 
+             if (defined $tokens[$index]) {
+                 if ($tokens[$index] ne '<') {         
+                     $index++ if defined $tokens[$index];
+                     $tokens[$index] .= $char;
+                 }
+                 else {
+                     $heredoc = 1;
+                     $tokens[$index] .= $char;
+                     $index++;
+                 }
+             }
+             else {
+                 $tokens[$index] .= $char;
+             }
          }
          elsif ($char eq '>' && !$comment) {
-           if ($tokens[$index] ne '>') {          # Append? 
+           if (defined $tokens[$index] && $tokens[$index] ne '>') {          # Append? 
               $index++ if defined $tokens[$index];
               $tokens[$index] .= $char;
            }
@@ -320,8 +327,14 @@ sub identify {
    my @out;
    my $first = $in[0];
    
+   if (!@in) {
+       print STDERR "+++ Internal error: Empty input array to identify\n";
+       my @caller = caller();
+       die "@caller\n";
+   }
+   
+   #print STDERR "identify first <$first>\n";
    # Special processing for the first token
-   #print STDERR "identify: <$first>\n";
    
    if ($first =~ /^\w+\+?=/) {
       $out[0] = [('ASSIGNMENT', 
@@ -333,12 +346,12 @@ sub identify {
                  \&App::sh2p::Handlers::Handle_array_assignment)];
       shift @in
    }
-   elsif ($first eq BREAK) {
+   elsif (is_break($first)) {
       $out[0] = [('BREAK', 
                  \&App::sh2p::Handlers::Handle_break)];
       shift @in
    }
-   elsif (!$nested && $first =~ /^\$[A-Z0-9#@*{}\[\]]+/i) {   # $(eol) removed 0.04
+   elsif (!$nested && $first =~ /^([\"]?)\$[A-Z0-9#@*{}\[\]]+\1/i) {   # Optional " added January 2009
        # Not a variable, but a call (variable contains call name)
        $out[0] = [('EXTERNAL',
                   \&App::sh2p::Handlers::Handle_external)];
@@ -354,7 +367,11 @@ sub identify {
       my $type = 'UNKNOWN';
       my $sub  = \&App::sh2p::Handlers::Handle_unknown;
 
-      if ($token =~ /^\w+=/) {
+      if (ref($token) eq 'CODE') {
+         $sub  = $token;
+         $type = 'INTERNAL';      
+      }
+      elsif ($token =~ /^\w+=/) {
          $sub  = \&App::sh2p::Handlers::Handle_assignment;
          $type = 'ASSIGNMENT';
       }
@@ -371,12 +388,6 @@ sub identify {
          $type = 'OPERATOR';
          # Shortcut, next is another command
       }
-      #elsif (exists $iglob{$token}) {
-      #elsif ($token =~ /^[^\$].*\[|\*|\?/) {
-      #print STDERR "identify: <$token>\n";
-      #   $sub  = \&App::sh2p::Handlers::Handle_Glob;
-      #   $type = 'GLOB';
-      #}
       elsif (exists $ibuiltins{$token} && $nested < 2) {
          $sub  = $ibuiltins{$token};
          $type = 'BUILTIN'
@@ -399,26 +410,44 @@ sub identify {
             $sub  = $idelimiter{$three_chars};        
          }
          elsif (exists $idelimiter{$two_chars}) {
-            $type = 'TWO_CHAR_DELIMITER';
-            $sub  = $idelimiter{$two_chars};
+            # Special hack for variables
+            if ( $two_chars eq '${' && (!@out || ($out[-1]->[0] eq 'BREAK')) && 
+	    	  !$nested && !is_break($first_char)) {   # Must be first token
+	        $type = 'EXTERNAL';
+	    	$sub = \&App::sh2p::Handlers::Handle_external;
+	    }
+	    else {
+                $type = 'TWO_CHAR_DELIMITER';
+                $sub  = $idelimiter{$two_chars};
+            }
          }
-         elsif (exists $idelimiter{$first_char}) {
-            $type = 'SINGLE_DELIMITER';
-            $sub  = $idelimiter{$first_char};
+         elsif (exists $idelimiter{$first_char}) {   # January 2009
+            if ( $first_char eq '"' && (!@out || ($out[-1]->[0] eq 'BREAK')) && 
+	    	  !$nested && !is_break($first_char)) {   # Must be first token
+	        $type = 'EXTERNAL';
+	    	$sub = \&App::sh2p::Handlers::Handle_external;
+	    }
+	    else {
+                $type = 'SINGLE_DELIMITER';
+                $sub  = $idelimiter{$first_char};
+            }
          }
          elsif ($first_char eq '~') {
             $type = 'GLOB';
             $sub  = \&App::sh2p::Handlers::Handle_Glob;
          }
+         elsif ( (!@out || ($out[-1]->[0] eq 'BREAK')) && 
+                  !$nested && !is_break($first_char)) {   # Must be first token
+            $type = 'EXTERNAL';
+            $sub = \&App::sh2p::Handlers::Handle_external;
+         }
+         # January 2009 This test must come after the 'EXTERNAL' test, 
+         # otherwise a bare variable is not seen as an external call
          elsif ($first_char eq '$' && $token =~ /^\$[A-Z0-9\#\@\*\?\{\}\[\]]+$/i) {        
             $type = 'VARIABLE';
             $sub  = \&App::sh2p::Handlers::Handle_variable
          }
-         elsif ( (!@out || (@out == 1 && $out[0]->[0] eq 'BREAK')) && !$nested && $first_char ne BREAK) {   # Must be first token
-            $type = 'EXTERNAL';
-            $sub = \&App::sh2p::Handlers::Handle_external;
-         }
-         elsif ($first_char eq BREAK) {
+         elsif (is_break($first_char)) {
             $type = 'BREAK';
             $sub = \&App::sh2p::Handlers::Handle_break;
          }
@@ -458,20 +487,33 @@ sub convert (\@\@) {
    }
 
    if (@$rtok != @$rtype ) {
-      print STDERR "rtok: <@$rtok>, rtype: <@$rtype>\n";
+      print STDERR "+++ Internal Error rtok: <@$rtok>, rtype: <@$rtype>\n";
       die "Parser::convert: token and type arrays uneven\n"
    }
    
-   pop @$rtok if ($rtok->[-1] eq BREAK);
+   pop @$rtok if (is_break($rtok->[-1]));
    my $tokens_processed = 0;
+   
+   #print_types_tokens ($rtype, $rtok);
    
    while (@$rtok) {
     
       my $type = $rtype->[0][0];
       my $sub  = $rtype->[0][1];
       
+      #print STDERR "tokens: <@$rtok> type: $type, sub: $sub\n";
       if (ref($sub) eq 'CODE' ) {
+      
+         if ($type eq 'COMPOUND') {
+             test_for_redirection($rtok, $rtype);
+         }
+      
          $tokens_processed = &$sub(@$rtok);
+         
+         if ($tokens_processed > @$rtok) {
+             error_out "Internal error: Token count wrong! Was: $tokens_processed, max: ".scalar(@$rtok);
+             error_out "Type: $rtype->[0][0], tokens: @$rtok";
+         }
       }
       else {      
          error_out ("No conversion routine for $type $rtok->[0]");
@@ -479,11 +521,46 @@ sub convert (\@\@) {
          $tokens_processed = 1;
       }
       
-      # Remove tokens already processed
-      splice (@$rtok,  0, $tokens_processed);
-      splice (@$rtype, 0, $tokens_processed);
+      if ($tokens_processed) {
+          # Remove tokens already processed
+          splice (@$rtok,  0, $tokens_processed);
+          splice (@$rtype, 0, $tokens_processed);
+      }
    }
    
+}
+
+########################################################
+# Called by convert
+sub test_for_redirection {
+    
+    my ($rtok, $rtype) = @_;
+    
+    my $next_type = $rtype->[1][0];
+    
+     
+    return 0 if !defined $next_type || $next_type ne 'BUILTIN'; 
+  
+    #print_types_tokens($rtype, $rtok);
+        
+    for (my $i = 2; $i < @$rtok; $i++) {
+        if ($rtok->[$i] eq '<' || $rtok->[$i] eq '>' || $rtok->[$i] eq '>>') {     
+	    
+	    if ( !defined $rtok->[$i+1] ) {
+	         die "*** Malformed redirection (no file)\n";
+	    }
+	
+	    my $redirection_file = $rtok->[$i+1];
+	    $redirection_file =~ s/^\s+//; 
+	    App::sh2p::Handlers::Handle_open_redirection ($rtok->[$i], 
+	                                                  $redirection_file);
+            # Remove tokens processed
+            splice (@$rtok,  $i, 2);
+            splice (@$rtype, $i, 2);
+	    
+	    return 2;
+	}
+    }
 }
 
 ########################################################
@@ -491,22 +568,27 @@ sub convert (\@\@) {
 sub join_parse_tokens {
 
     my ($sep, @args) = @_;
- 
-    # Is final token a comment?    
-    pop @args if substr($args[-1],0,1) eq '#';
-
-    my $ntok = @args;
+    my $ntok = 0;
 
     # C style for loop because I need to check the position
     for (my $i = 0; $i < @args; $i++) {
-   
+        
         my @tokens = ($args[$i]);
         my @types  = identify (2, @tokens);
-       
+   
         #print_types_tokens(\@types, \@tokens);
-       
-        convert (@tokens, @types);       
-        out $sep if $i < $#args;      
+        
+        convert (@tokens, @types); 
+        $ntok++;
+        
+        # Look ahead to see if we are at end
+        if ($i < $#args) { 
+            last if substr($args[$i+1],0,1) eq '#';  
+            last if is_break($args[$i+1]);
+            last if $args[$i+1] eq ';';      # January 2009
+            out $sep;
+        }
+        
     }
 
     return $ntok;
@@ -537,8 +619,15 @@ sub analyse_pipeline {
     }
     
     for (my $i = 0; $i < @args; $i++) {
-        $args[$i] =~ s/^\s+//; 
-        $args[$i] =~ s/\s+$//;
+        $args[$i] =~ s/^\s+//;      # Strip leading whitespace
+        $args[$i] =~ s/\s+$//;      # Strip trailing whitespace
+        
+        if (! $args[$i] ) {
+            # Blank line - remove it
+            splice (@args, $i, 1);
+            $i--;   # to counteract the ++
+            next;
+        }
         
         my @tokens = tokenise ($args[$i]);
         my @types  = identify (0, @tokens);
