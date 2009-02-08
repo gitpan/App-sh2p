@@ -22,7 +22,7 @@ use Scalar::Util qw(refaddr);
 
 use App::sh2p::Utils;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 #################################################################################
 

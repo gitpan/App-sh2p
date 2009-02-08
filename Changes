@@ -93,4 +93,15 @@ Revision history for Perl extension App::sh2p.
 	- improvements to $* handling
 	- improvements to redirection
 	- improvements to testing, including the provision of main()
+0.06  Sun Feb 08 17:00:00 2009
+	- fixed bug in chmod, chown, chgrp, which gave "Token count wrong!"
+	- fixed bug in kill which gave "Token count wrong!"
+	- fixed bug with filename quoting in chmod, et. al.
+	- fixed bug where a bare Perl reference was displayed
+	- fixed bug in export where environment vars. on rhs were not recognised
+	- corrected quoting of bareword value in export
+	- corrected quoting in source/. command
+	- corrected quoting in touch command
+	- fixed bug where variable type (integer, etc.) was sometimes missed
+	- improved diagnostics when using shopt
 	

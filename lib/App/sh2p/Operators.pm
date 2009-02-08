@@ -6,7 +6,7 @@ use App::sh2p::Utils;
 
 sub App::sh2p::Parser::convert(\@\@);
 
-our $VERSION = '0.04';
+our $VERSION = '0.06';
 my $g_specials = '\[|\*|\?';
 my %g_perl_ops;
 

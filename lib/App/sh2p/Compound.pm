@@ -7,7 +7,7 @@ use App::sh2p::Handlers;
 use App::sh2p::Trap;
 
 sub App::sh2p::Parser::convert(\@\@);
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 my $g_not = 0;
 my $g_context = '';

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # Clive Darke 2006
-# Additional modifications 2008. See Changes file
+# Additional modifications 2008, 2009. See Changes file
 
 use warnings;
 use strict;
@@ -33,7 +33,7 @@ my $g_integer = 1;
 my $g_clobber = 0;
 my $g_display = 0;
 
-our $VERSION = 0.05;
+our $VERSION = 0.06;
 our $DEBUG   = 0;
 
 ###########################################################

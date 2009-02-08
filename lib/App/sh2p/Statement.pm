@@ -9,7 +9,7 @@ use App::sh2p::Utils;
 use App::sh2p::Parser;
 
 sub App::sh2p::Parser::convert(\@\@);
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 ###########################################################################
 
 my %tokens;

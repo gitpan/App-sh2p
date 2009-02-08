@@ -6,7 +6,7 @@ use App::sh2p::Parser;
 use App::sh2p::Utils;
 use App::sh2p::Here;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 sub App::sh2p::Parser::convert(\@\@);
 
 my $g_unterminated_backtick = 0;
@@ -85,6 +85,7 @@ sub Handle_assignment {
    }
    else {
       # Process the rhs
+      
       if ($isa_int) {
          out "int(";
       }
@@ -1060,6 +1061,8 @@ sub Handle_unknown {
        out "$token";
    }
    else {
+       #my @caller = caller();
+       #print STDERR "Handle_unknown token: <$token> @caller\n";
        out "\"$token\"";
    }
    

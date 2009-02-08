@@ -3,7 +3,7 @@ package App::sh2p::Utils;
 use warnings;
 use strict;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 require Exporter;
 our (@ISA, @EXPORT);
@@ -269,10 +269,7 @@ sub Register_variable {
     
     # Remove '$' if it exists
     $name =~ s/^\$//;
-    
-    #print STDERR "Register_variable: <$name> <$type> <$level>\n";
-    #my @caller = caller;
-    #die "@caller";
+      
     # January 2009
     if (exists $g_special_vars{$name} && $name ne 'IFS') {
         return 0;
@@ -282,6 +279,7 @@ sub Register_variable {
     
        if ($g_variables{$name}->[0] <= $level && 
            $g_variables{$name}->[2] == $g_ina_subshell) { 
+           #print STDERR "Register_variable: <$name> <$g_variables{$name}->[1]> returning 0\n";
            return 0
        }
        else {
@@ -318,7 +316,10 @@ sub get_variable_type {
 
     my ($name) = @_;
     my $level  = get_block_level();
-        
+
+    # Remove '$' if it exists - 0.06
+    $name =~ s/^\$//;
+
     if (exists $g_variables{$name}) {
   
        if ($g_variables{$name}->[0] <= $level) {
@@ -486,13 +487,11 @@ sub iout {
 
 sub out {
    
-   local $" = '';
-   my $line = "@_";
-   
+   local $" = '';   
    #my @caller = caller();
-   #print STDERR "out: <$line> @caller\n";
-   
-   $g_out_buffer .= $line;
+   #print STDERR "out: <@_> @caller\n";
+  
+   $g_out_buffer .= "@_";
       
    $g_new_line = 0;
    
@@ -526,14 +525,13 @@ sub rem_empty_string {
 sub error_out {
     my $msg = shift;
     
+    # 0.06
     if (defined $msg) {
-        $msg = "**** INSPECT: $msg\n";
+        $g_err_buffer .= "# **** INSPECT: $msg\n";
     }
     else {
-        $msg = "\n";
+        $g_err_buffer .= "\n";
     }
-
-    $g_err_buffer .= "# $msg";
     
     $g_errors++;
 }

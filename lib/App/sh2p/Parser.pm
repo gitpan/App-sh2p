@@ -9,7 +9,7 @@ use App::sh2p::Utils;
 
 sub convert(\@\@);
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 our $DEBUG   = 0;
 
 ###########################################################
@@ -447,7 +447,7 @@ sub identify {
             $type = 'VARIABLE';
             $sub  = \&App::sh2p::Handlers::Handle_variable
          }
-         elsif (is_break($first_char)) {
+         elsif (is_break($token)) {      # 0.06
             $type = 'BREAK';
             $sub = \&App::sh2p::Handlers::Handle_break;
          }

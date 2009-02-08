@@ -104,6 +104,10 @@ but the sourced file should also be converted.
 
 =head3 Pattern <pattern> not currently supported
 
+=head3 Shell option <option> being set
+
+The Bash shopt built-in has been called.  Shell options are not converted.
+
 =head3 Unable to convert shell pattern matching <$token>
 
 =head3 User function <function-name> called in back-ticks

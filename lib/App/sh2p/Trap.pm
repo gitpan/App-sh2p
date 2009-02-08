@@ -6,7 +6,7 @@ use strict;
 use App::sh2p::Handlers;
 use App::sh2p::Utils;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 my %function_signals;
 my %global_signals;

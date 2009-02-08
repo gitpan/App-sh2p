@@ -6,7 +6,7 @@ use App::sh2p::Utils;
 use App::sh2p::Parser;
 use App::sh2p::Here;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 sub App::sh2p::Parser::convert(\@\@);
 
 my %g_shell_options;
@@ -263,6 +263,10 @@ sub chmod_text_permissions {
    my ($in, $file) = @_;
    
    iout "# chmod $in $file\n";
+   
+   # Remove any surrounding quotes 0.06
+   $file =~ s/^\"(.*)\"$/$1/; 
+   
    my $stat = "{ my \$perm = (stat \"$file\")[2] & 07777;\n";
    
    # numbers are base 10: I'm constructing a string, not an octal int
@@ -310,7 +314,7 @@ sub do_chmod {
     my ($cmd) = shift;
     my ($opt) = shift;
     my $perms;
-    my $ntok = 2;
+    my $ntok = 2; 
 
     if (substr($opt,0,1) eq '-') {
        error_out ("$cmd options not yet supported");
@@ -338,7 +342,7 @@ sub do_chmod {
     iout "$cmd ";
     
     if (defined $perms) {
-        $ntok++;
+        #$ntok++;      0.06
         
         if ($cmd eq 'chmod') {
             out "0$perms,";
@@ -355,7 +359,6 @@ sub do_chmod {
             for (my $i=0; $i < @args; $i++) {
                 
 	        $ntok++;
-	        
 	        if (substr ($args[$i],0,1) eq '#') {
 	            my @comment = splice (@args,$i);
 	            $comment = "@comment";
@@ -365,9 +368,13 @@ sub do_chmod {
 	            last
 	        }
 	        
-	        # Escape embedded quotes
-	        $args[$i] =~ s/\"/\\\"/g;
+	        # Remove any surrounding quotes 0.06
+	        $args[$i] =~ s/^\"(.*)\"$/$1/;      
+	        
+	        # Escape embedded quotes 
+	        #$args[$i] =~ s/\"/\\\"/g;   # commented out 0.06
 	        #"help syntax highlighter
+	        
 	        $args[$i] = "\"$args[$i]\"";
 	        $args[$i] .= ',' if $i < $#args;
 	    } 
@@ -387,7 +394,7 @@ sub do_chown {
     my ($cmd) = shift;
     my ($opt) = shift;
     my $ugrp;
-    my $ntok = 2;
+    my $ntok = 1;
 
     if (substr($opt,0,1) eq '-') {
        error_out ("$cmd options not yet supported");
@@ -503,7 +510,20 @@ sub do_export {
    for my $env (@_) {
       if  ($env =~ /^(\w+)=(.*)$/) {
          $env = $1;
-         iout "\$ENV{$env} = $2;\n";
+         my $value = $2;
+         
+         # 0.06
+         if ($value =~ /^\$/) {
+             my $special = get_special_var($value);
+             $value = $special if defined $special;
+             iout "\$ENV{$env} = $value;\n";
+         }
+         elsif ($value =~ /^\$/ || $value =~ /^([\"\']).*\1/) {
+             iout "\$ENV{$env} = $value;\n";
+         }
+         else {
+             iout "\$ENV{$env} = \"$value\";\n";
+         }
       }
       else {
          iout "\$ENV{$env} = \$$env;\n";
@@ -575,16 +595,26 @@ sub do_integer {
 
 sub do_kill {
     my ($cmd, @rest) = @_;
-    my $signal = 'TERM';   # default signal
+    my $signal;
+    my $ntok = 0;
     
     # Remove the hyphen - it has a different meaning in Perl!
     if ($rest[0] =~ s/^-//) {
         $signal = shift @rest;
     }
+    else {
+        $signal = 'TERM';  # default signal
+        
+        # 0.06 Hack because this is an inserted token and 
+        # general_arg_list will include this in its count
+        $ntok--;           
+    }
 
     #print STDERR "do_kill: <@rest>\n";
 
-    return general_arg_list ($cmd, $signal, @rest);
+    $ntok += general_arg_list ($cmd, $signal, @rest);
+    
+    return $ntok;
 }
 
 ########################################################
@@ -998,6 +1028,7 @@ sub do_shopt {
        $ntok++;
    }  
    
+   error_out ("Shell option @options being set");
    if ($switch eq '-s') {
        @g_shell_options{@options} = undef;
    }
@@ -1021,14 +1052,16 @@ sub do_source {
    
    error_out ();
    error_out "sourced file should also be converted";
-   iout 'do "';
+   
+   # Removed enclosing " in 0.06
+   iout 'do ';
    
    no_semi_colon(); 
    
    $ntok += App::sh2p::Parser::join_parse_tokens ('.', @tokens);
    
    reset_semi_colon();
-   out '";';
+   out ';';
    
    return $ntok;
 }
@@ -1052,6 +1085,9 @@ sub do_touch {
         if (substr ($file,0,1) eq '#') {
             iout "$file\n";     # Output comment first         
         }
+        
+        # Remove surrounding quotes
+        $file =~ s/^([\'\"])(.*)\1/$2/;
         
 $text .= << "END"
     if (-e \"$file\") {
